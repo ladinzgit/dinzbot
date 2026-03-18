@@ -92,7 +92,7 @@ async def on_ready():
 
     print("Online!")
     
-    activity = discord.CustomActivity(name="새로 들어온 책들의 먼지를 터는 중...")
+    activity = discord.CustomActivity(name="새내기들 구경하는 중")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     
  # slash command sync
