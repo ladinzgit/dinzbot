@@ -58,7 +58,7 @@ class Chatbot(commands.Cog):
     TEMPERATURE = 1.0
     MAX_OUTPUT_TOKENS = 5000
     REQUEST_TIMEOUT_SECONDS = 70
-    MAX_HISTORY_MESSAGES = 10
+    MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
 
     RETRY_TOKEN_STEPS = (10000, 1200, 700, 350)
@@ -223,12 +223,21 @@ class Chatbot(commands.Cog):
 
         guild_id = message.guild.id
         user_id = message.author.id
+        display_name = message.author.display_name.strip() or message.author.name
+        shared_user_content = f"[{display_name}] {user_content}"
 
-        # 유저 메시지 저장
+        # 유저 개인 기록 + 길드 공용 기록 저장
         await chatbot_db.add_message(guild_id, user_id, "user", user_content)
+        await chatbot_db.add_message(
+            guild_id,
+            user_id,
+            "user",
+            shared_user_content,
+            scope=chatbot_db.SCOPE_SHARED,
+        )
 
-        # 대화 기록 + 시스템 프롬프트 구성
-        history = await chatbot_db.get_history(guild_id, user_id)
+        # 개인/공용 히스토리를 합쳐 모델 컨텍스트 구성
+        history = await chatbot_db.get_context_history(guild_id, user_id)
         api_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._trim_history(history)
 
         # typing 인디케이터 표시하며 API 호출
@@ -285,8 +294,15 @@ class Chatbot(commands.Cog):
 
         await message.reply(reply_text, mention_author=False)
 
-        # 응답 저장
+        # 응답 저장 (개인/공용)
         await chatbot_db.add_message(guild_id, user_id, "assistant", reply_text)
+        await chatbot_db.add_message(
+            guild_id,
+            user_id,
+            "assistant",
+            reply_text,
+            scope=chatbot_db.SCOPE_SHARED,
+        )
 
     # ── 설정 명령어 ───────────────────────────────────────
 
