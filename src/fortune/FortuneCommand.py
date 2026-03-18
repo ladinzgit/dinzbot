@@ -86,7 +86,7 @@ class FortuneCommand(commands.Cog):
 
         return "염소자리", "책임감, 꾸준함, 현실 감각"
 
-    @commands.command(name="운세")
+    @commands.command(aliases=["운세", "ㅇㅅ"])
     @only_in_guild()
     async def tell_fortune(self, ctx):
         """오늘의 운세를 생성하여 전송합니다. 하루에 한 번 사용 가능합니다."""
