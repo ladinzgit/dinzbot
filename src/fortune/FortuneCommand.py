@@ -1,4 +1,6 @@
 import os
+import random
+import re
 from datetime import datetime
 
 import discord
@@ -44,18 +46,15 @@ class FortuneCommand(commands.Cog):
             self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.BASE_URL)
 
     def _get_prompt_variant(self, user_id: int, today: datetime) -> str:
-        """사용자/날짜 기반으로 프롬프트 변주를 고정해 운세 표현 다양성을 높입니다."""
+        """매 호출마다 문체/리듬이 달라지도록 다양성 지시문을 반환합니다."""
         variants = [
-            "오늘은 실행 우선형 톤으로 작성해. 문장마다 실천 가능한 행동을 1개 이상 포함해.",
-            "오늘은 관찰 우선형 톤으로 작성해. 주변 신호와 타이밍을 읽는 조언을 중심으로 써.",
-            "오늘은 균형 조정형 톤으로 작성해. 무리했을 때의 리스크와 회복 루틴을 구체적으로 제안해.",
-            "오늘은 관계 전략형 톤으로 작성해. 말의 순서, 표현 강도, 거리 조절 팁을 분명하게 제시해.",
-            "오늘은 집중/분산 관리형 톤으로 작성해. 해야 할 일의 우선순위와 미루기 방지 전략을 포함해.",
-            "오늘은 기회 포착형 톤으로 작성해. 좋은 흐름을 잡는 조건과 놓치기 쉬운 함정을 함께 설명해.",
-            "오늘은 감정 안정형 톤으로 작성해. 예민해질 수 있는 순간과 감정 조절 방법을 현실적으로 안내해.",
+            "문장 길이를 짧은 문장과 긴 문장으로 교차하고, 문단 첫 문장은 각각 다른 방식(상황 제시/행동 제안/감각 묘사)으로 시작해",
+            "각 문단에 서로 다른 리듬을 사용하고, 같은 어미 반복을 줄이며, 비유는 한 문단에 최대 1회만 사용해",
+            "문단마다 시점을 다르게 운용해(관찰->행동->정리), 상투 표현 없이 구체 장면 중심으로 전개해",
+            "첫 문단은 현실 장면, 둘째 문단은 대화 맥락, 셋째 문단은 체크리스트형 조언으로 구성하되 문장 흐름은 자연스럽게 이어가",
+            "문단 시작어를 모두 다르게 하고, 연결어 남용을 피하며, 핵심 조언은 동사 중심으로 또렷하게 써",
         ]
-        idx = (user_id + today.toordinal()) % len(variants)
-        return variants[idx]
+        return random.choice(variants)
 
     def _get_zodiac_info(self, month: int, day: int) -> tuple[str, str]:
         """월/일 기준 서양 별자리와 핵심 성향 키워드를 반환합니다."""
@@ -85,6 +84,77 @@ class FortuneCommand(commands.Cog):
             return "사수자리", "확장성, 낙관성, 탐구심"
 
         return "염소자리", "책임감, 꾸준함, 현실 감각"
+
+    def _calculate_life_path(self, birth_year, month: int, day: int) -> int | None:
+        """생년월일 기반 라이프패스 수를 계산합니다."""
+        if not birth_year:
+            return None
+
+        digits = f"{birth_year}{month:02d}{day:02d}"
+        total = sum(int(ch) for ch in digits if ch.isdigit())
+
+        while total > 9 and total not in (11, 22, 33):
+            total = sum(int(ch) for ch in str(total))
+        return total
+
+    def _build_birth_profile(self, birth_year, month: int, day: int) -> dict:
+        """운세 프롬프트 개인화에 사용하는 출생 프로필을 구성합니다."""
+        zodiac, zodiac_key = self._get_zodiac_info(month, day)
+
+        month_key_map = {
+            1: "초반 정비와 목표 재설정", 2: "관계 온도와 감정 균형", 3: "새 시도와 속도감", 4: "실행력과 루틴 강화",
+            5: "현실 점검과 안정 추구", 6: "협업과 조율", 7: "내면 정리와 집중", 8: "성과 의식과 자기표현",
+            9: "정리와 품질 개선", 10: "균형 잡힌 선택", 11: "깊이 있는 몰입", 12: "마무리와 재충전",
+        }
+
+        relation_style_map = {
+            "양자리": "직설적이고 빠른 소통", "황소자리": "신뢰 기반의 차분한 소통", "쌍둥이자리": "가볍고 재치 있는 소통",
+            "게자리": "배려 중심의 정서적 소통", "사자자리": "명확하고 존재감 있는 소통", "처녀자리": "정확하고 실용적인 소통",
+            "천칭자리": "균형과 합의를 중시하는 소통", "전갈자리": "깊이 있고 집중도 높은 소통", "사수자리": "열린 시야의 솔직한 소통",
+            "염소자리": "책임과 약속을 중시하는 소통", "물병자리": "독립적이고 아이디어 중심 소통", "물고기자리": "공감과 맥락을 살리는 소통",
+        }
+
+        mistake_trigger_map = {
+            "양자리": "성급한 결론", "황소자리": "변화 회피", "쌍둥이자리": "집중 분산", "게자리": "감정 과몰입",
+            "사자자리": "체면 의식", "처녀자리": "과도한 완벽주의", "천칭자리": "결정 지연", "전갈자리": "과한 의심",
+            "사수자리": "계획 없는 낙관", "염소자리": "무리한 책임", "물병자리": "거리 두기 과다", "물고기자리": "경계 흐림",
+        }
+
+        luck_anchor_map = {
+            "양자리": "짧고 빠른 첫 행동", "황소자리": "루틴 한 가지 고정", "쌍둥이자리": "메모와 즉시 공유",
+            "게자리": "감정 환기 산책", "사자자리": "핵심 한 문장 선언", "처녀자리": "체크리스트 3개",
+            "천칭자리": "선택 기준 먼저 적기", "전갈자리": "중요 일 한 번에 몰입", "사수자리": "작은 탐색 시도",
+            "염소자리": "우선순위 1개 고정", "물병자리": "새 관점 질문 1개", "물고기자리": "직관 기록 후 검증",
+        }
+
+        return {
+            "zodiac": zodiac,
+            "zodiac_key": zodiac_key,
+            "month_key": month_key_map.get(month, "월별 성향 미정"),
+            "relation_style": relation_style_map.get(zodiac, "상황 맞춤 소통"),
+            "mistake_trigger": mistake_trigger_map.get(zodiac, "과한 단정"),
+            "luck_anchor": luck_anchor_map.get(zodiac, "작은 실행 루틴"),
+            "life_path": self._calculate_life_path(birth_year, month, day),
+        }
+
+    def _extract_avoid_phrases(self, recent_texts: list[str], max_items: int = 8) -> list[str]:
+        """최근 운세에서 반복을 피할 상투 표현을 추출합니다."""
+        if not recent_texts:
+            return []
+
+        candidates = [
+            "좋은 기운", "무난한 하루", "작은 행운", "기회를 잡", "흐름을 타", "균형을 유지", "여유를 가져",
+            "신중하게", "서두르지", "천천히", "타이밍", "소통이 중요", "컨디션 관리", "지출 관리",
+        ]
+
+        joined = "\n".join(recent_texts)
+        found: list[str] = []
+        for phrase in candidates:
+            if re.search(re.escape(phrase), joined):
+                found.append(phrase)
+            if len(found) >= max_items:
+                break
+        return found
 
     @commands.command(aliases=["운세", "ㅇㅅ"])
     @only_in_guild()
@@ -125,7 +195,7 @@ class FortuneCommand(commands.Cog):
         today = datetime.now(KST)
         birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
-        await self._generate_fortune(ctx, birth_text, today, month, day)
+        await self._generate_fortune(ctx, birth_text, today, birth_year, month, day)
         fortune_db.set_user_last_used(ctx.guild.id, ctx.author.id, today_str)
 
         await self.log(
@@ -158,22 +228,31 @@ class FortuneCommand(commands.Cog):
         today = datetime.now(KST)
         birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
-        await self._generate_fortune(ctx, birth_text, today, month, day)
+        await self._generate_fortune(ctx, birth_text, today, birth_year, month, day)
         await self.log(f"{ctx.author}({ctx.author.id})가 관리자 권한으로 강제 운세를 조회함 [길드: {ctx.guild.name}({ctx.guild.id})]")
 
-    async def _generate_fortune(self, ctx, birth_text, today, month: int, day: int):
+    async def _generate_fortune(self, ctx, birth_text, today, birth_year, month: int, day: int):
         """공통 운세 생성 로직"""
-        zodiac_name, zodiac_traits = self._get_zodiac_info(month, day)
         today_text = f"{today.year}년 {today.month}월 {today.day}일"
+        birth_profile = self._build_birth_profile(birth_year, month, day)
+        life_path_text = str(birth_profile["life_path"]) if birth_profile["life_path"] is not None else "미제공"
+
+        recent_texts = fortune_db.get_recent_fortune_texts(ctx.guild.id, ctx.author.id, days=7)
+        avoid_phrases = self._extract_avoid_phrases(recent_texts)
+        avoid_phrases_text = "\n".join([f"- {p}" for p in avoid_phrases]) if avoid_phrases else "- 없음"
+
         prompt = (
-            "아래 정보를 해석 근거로 사용해 오늘의 운세를 작성해줘.\n"
-            f"- 생일: {birth_text}\n"
-            f"- 별자리: {zodiac_name}\n"
-            f"- 별자리 핵심 성향: {zodiac_traits}\n"
-            f"- 기준 날짜: {today_text}\n\n"
-            "요청 조건:\n"
-            "- 생일과 별자리 정보가 달라지면 결과 내용도 분명히 달라지게 작성\n"
-            "- 성향 키워드를 반복 나열하지 말고 구체적 상황과 행동 조언에 자연스럽게 반영"
+            f"{birth_text} {today_text} 오늘의 운세를 알려줘.\n"
+            "아래 개인화 입력을 반드시 반영해.\n"
+            f"- 별자리: {birth_profile['zodiac']}\n"
+            f"- 월별 핵심 성향: {birth_profile['month_key']}\n"
+            f"- 별자리 핵심 성향: {birth_profile['zodiac_key']}\n"
+            f"- 관계 소통 스타일: {birth_profile['relation_style']}\n"
+            f"- 오늘 실수 트리거: {birth_profile['mistake_trigger']}\n"
+            f"- 행운 루틴 키워드: {birth_profile['luck_anchor']}\n"
+            f"- 라이프패스 숫자: {life_path_text}\n\n"
+            "최근 7일 운세에서 반복 회피할 표현 목록:\n"
+            f"{avoid_phrases_text}"
         )
         variant_instruction = self._get_prompt_variant(ctx.author.id, today)
         waiting_message = None
@@ -208,26 +287,36 @@ class FortuneCommand(commands.Cog):
                             "- 긍정 70%, 주의/경고 30% 비율 유지\n"
                             "- 경고를 제시할 때는 반드시 '실제 행동 가능한 대응 방법' 포함\n\n"
 
+                            "【생일 기반 개인화 규칙 - 최우선】\n"
+                            "- 사용자 입력의 별자리/월별 성향/관계 스타일/실수 트리거/행운 루틴을 반드시 본문에 녹여 써\n"
+                            "- 세 문단 이상 모두 개인화 요소를 각각 1개 이상 반영해\n"
+                            "- 생일이 다르면 핵심 상황, 조언, 경고 포인트가 명확히 달라지게 작성해\n"
+                            "- 개인화 키워드는 직접 나열하지 말고 자연스러운 문장 안에 녹여 써\n"
+                            "- 생년월일 자체 언급은 금지하되, 개인화 해석 결과는 적극 반영해\n\n"
+
                             "【다양성 강화 규칙 - 매우 중요】\n"
                             f"- {variant_instruction}\n"
-                            "- 같은 표현, 문장 구조, 시작 방식 반복 금지\n"
-                            "- '좋은 기운', '무난한 하루', '작은 행운' 같은 상투 표현 사용 금지\n"
-                            "- 문단 시작 방식 매번 다르게 (상황 제시 / 감각 묘사 / 행동 제안 등)\n"
-                            "- 비유는 사용하되 cliché(뻔한 비유)는 피하기\n\n"
+                            "- 같은 표현, 문장 구조, 시작 방식 반복을 금지해\n"
+                            "- '좋은 기운', '무난한 하루', '작은 행운' 같은 상투 표현은 쓰지 마\n"
+                            "- 사용자 프롬프트에 제공된 '반복 회피 표현 목록'과 동일/유사한 문장을 다시 쓰지 마\n"
+                            "- 특히 문단 첫 문장과 요약 문장은 과거 7일과 겹치지 않게 새롭게 작성해\n"
+                            "- 문단 시작 방식은 매번 다르게 구성해 (상황 제시 / 감각 묘사 / 행동 제안 등)\n"
+                            "- 비유를 쓰더라도 뻔한 비유(cliche)는 피해\n\n"
 
                             "【출력 형식 - 반드시 준수】\n"
-                            "서론 없이 바로 시작\n\n"
+                            "서론 없이 바로 시작해\n\n"
 
                             "본문 문단 규칙:\n"
                             "- 문단 수는 3~4개\n"
-                            "- 각 문단은 4~5줄\n"
+                            "- 각 문단은 3~5줄\n"
                             "- 문단별 주제는 모델이 직접 정하되, 문단끼리 주제와 표현이 겹치지 않게 구성\n"
-                            "- 최소 1개 문단에는 오늘 바로 실행 가능한 행동 지침을 분명히 포함\n"
-                            "- 최소 1개 문단에는 경고 상황 + 대응 행동을 함께 포함\n\n"
+                            "- 최소 1개 문단에는 일/학업/할 일 진행 관련 장면을, 최소 1개 문단에는 관계/소통 장면을 포함해\n"
+                            "- 남은 문단 주제는 컨디션, 소비 습관, 감정 관리, 시간 운영, 공간/환경, 루틴 등에서 자유롭게 선택해\n"
+                            "- 각 문단에는 반드시 1개 이상의 구체적 상황과 1개 이상의 행동 가능한 조언을 포함해\n\n"
 
                             "(빈 줄)\n\n"
 
-                            "**요약:** 한 문장으로 핵심 정리 (자연스럽게)\n\n"
+                            "**요약:** 한 문장으로 핵심 정리 (자연스럽게)묘.\n\n"
 
                             "**행운의 상징:**\n"
                             "- 아래 항목 중 6개 선택\n"
@@ -245,6 +334,7 @@ class FortuneCommand(commands.Cog):
                             "- 서론/인사말 금지\n"
                             "- 같은 표현 반복 금지\n"
                             "- 추상적인 말만 하고 끝내는 것 금지\n"
+                            "- 입력된 개인화 정보를 무시한 일반론 운세 작성 금지\n"
                             "- 요약/행운의 상징에서도 띄어쓰기 철저히 준수\n\n"
 
                             "【중요】\n"
@@ -262,6 +352,8 @@ class FortuneCommand(commands.Cog):
                 max_completion_tokens=1500,
             )
             fortune_text = completion.choices[0].message.content.strip()
+            today_str = today.strftime("%Y-%m-%d")
+            fortune_db.save_fortune_text(ctx.guild.id, ctx.author.id, today_str, fortune_text)
         except Exception as e:
             error_msg = "운세를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
             if waiting_message:

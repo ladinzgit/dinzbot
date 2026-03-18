@@ -22,6 +22,7 @@ DB 파일: data/fortune_db.json
 """
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -51,13 +52,14 @@ def _save(data: dict):
 def _guild(data: dict, guild_id) -> dict:
     key = str(guild_id)
     if key not in data:
-        data[key] = {"config": {}, "targets": {}, "buttons": {}, "daily_usage": {}}
+        data[key] = {"config": {}, "targets": {}, "buttons": {}, "daily_usage": {}, "fortune_history": {}}
     # 누락된 키 보완
     g = data[key]
     g.setdefault("config", {})
     g.setdefault("targets", {})
     g.setdefault("buttons", {})
     g.setdefault("daily_usage", {})
+    g.setdefault("fortune_history", {})
     return g
 
 
@@ -76,6 +78,49 @@ def set_user_last_used(guild_id, user_id, date_str: str):
         data = _load()
         _guild(data, guild_id)["daily_usage"][str(user_id)] = date_str
         _save(data)
+
+
+def save_fortune_text(guild_id, user_id, date_str: str, text: str, max_keep: int = 40):
+    """유저 운세 본문을 날짜와 함께 저장합니다."""
+    with _lock:
+        data = _load()
+        g = _guild(data, guild_id)
+        uid = str(user_id)
+        history = g["fortune_history"].setdefault(uid, [])
+        history.append({"date": date_str, "text": text})
+        if len(history) > max_keep:
+            g["fortune_history"][uid] = history[-max_keep:]
+        _save(data)
+
+
+def get_recent_fortune_texts(guild_id, user_id, days: int = 7) -> list[str]:
+    """최근 N일 운세 텍스트 목록을 반환합니다."""
+    with _lock:
+        data = _load()
+        g = _guild(data, guild_id)
+        uid = str(user_id)
+        history = g["fortune_history"].get(uid, [])
+
+    if not history:
+        return []
+
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=max(days - 1, 0))
+    results: list[str] = []
+
+    for item in history:
+        date_str = item.get("date")
+        text = item.get("text")
+        if not date_str or not text:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d >= cutoff:
+            results.append(text)
+
+    return results
 
 
 # ── 길드 설정 ────────────────────────────────────────────
