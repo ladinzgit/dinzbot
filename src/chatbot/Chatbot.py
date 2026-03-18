@@ -55,8 +55,12 @@ class Chatbot(commands.Cog):
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
     MODEL = "gpt-5-mini"
     TEMPERATURE = 0.7
-    MAX_OUTPUT_TOKENS = 2000
-    REQUEST_TIMEOUT_SECONDS = 25
+    MAX_OUTPUT_TOKENS = 700
+    REQUEST_TIMEOUT_SECONDS = 20
+    MAX_HISTORY_MESSAGES = 10
+    MAX_HISTORY_CHARS = 5000
+
+    RETRY_TOKEN_STEPS = (700, 350, 180)
 
     def __init__(self, bot):
         self.bot = bot
@@ -89,6 +93,21 @@ class Chatbot(commands.Cog):
         guild_key = str(guild_id)
         config.setdefault(guild_key, {})["channel_id"] = channel_id
         _save_config(config)
+
+    def _trim_history(self, history: list[dict]) -> list[dict]:
+        """응답 지연을 줄이기 위해 최근 메시지 위주로 히스토리를 축약합니다."""
+        trimmed = history[-self.MAX_HISTORY_MESSAGES:]
+
+        total_chars = 0
+        result: list[dict] = []
+        for msg in reversed(trimmed):
+            content = msg.get("content", "")
+            total_chars += len(content)
+            if total_chars > self.MAX_HISTORY_CHARS:
+                break
+            result.append(msg)
+
+        return list(reversed(result))
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
@@ -125,35 +144,42 @@ class Chatbot(commands.Cog):
 
         # 대화 기록 + 시스템 프롬프트 구성
         history = await chatbot_db.get_history(guild_id, user_id)
-        # 방금 저장한 유저 메시지가 history 마지막에 포함되어 있으므로
-        # 중복 없이 그대로 사용
-        api_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+        api_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._trim_history(history)
 
         # typing 인디케이터 표시하며 API 호출
         async with message.channel.typing():
-            try:
-                completion = await self.client.chat.completions.create(
-                    model=self.MODEL,
-                    messages=api_messages,
-                    temperature=self.TEMPERATURE,
-                    max_tokens=self.MAX_OUTPUT_TOKENS,
-                    timeout=self.REQUEST_TIMEOUT_SECONDS,
-                )
-                if not completion.choices:
-                    raise ValueError("모델 응답 choices가 비어 있습니다.")
+            reply_text = None
+            last_error = None
 
-                raw_text = completion.choices[0].message.content
-                if not raw_text:
-                    raise ValueError("모델 응답 content가 비어 있습니다.")
+            for max_tokens in self.RETRY_TOKEN_STEPS:
+                try:
+                    completion = await self.client.chat.completions.create(
+                        model=self.MODEL,
+                        messages=api_messages,
+                        temperature=self.TEMPERATURE,
+                        max_tokens=max_tokens,
+                        timeout=self.REQUEST_TIMEOUT_SECONDS,
+                    )
+                    if not completion.choices:
+                        raise ValueError("모델 응답 choices가 비어 있습니다.")
 
-                reply_text = raw_text.strip()
-            except Exception as e:
+                    raw_text = completion.choices[0].message.content
+                    if not raw_text:
+                        raise ValueError("모델 응답 content가 비어 있습니다.")
+
+                    reply_text = raw_text.strip()
+                    if reply_text:
+                        break
+                except Exception as e:
+                    last_error = e
+
+            if not reply_text:
                 await self.log(
-                    f"챗봇 응답 생성 실패: {e} "
+                    f"챗봇 응답 생성 실패(모든 재시도 실패): {last_error} "
                     f"[길드: {message.guild.name}({guild_id}), 유저: {message.author}({user_id})]"
                 )
                 await message.reply(
-                    "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                    "요청한 내용이 길거나 복잡해 응답 생성이 지연되었습니다. 핵심만 먼저 답변하면: 질문을 더 작은 단위로 나누어 보내주시면 즉시 이어서 답변하겠습니다.",
                     mention_author=False,
                 )
                 return
