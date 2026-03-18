@@ -55,7 +55,7 @@ class Chatbot(commands.Cog):
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
     MODEL = "gpt-5-mini"
     TEMPERATURE = 0.7
-    MAX_OUTPUT_TOKENS = 400
+    MAX_OUTPUT_TOKENS = 2000
     REQUEST_TIMEOUT_SECONDS = 25
 
     def __init__(self, bot):
