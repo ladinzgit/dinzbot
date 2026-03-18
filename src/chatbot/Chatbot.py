@@ -55,12 +55,13 @@ class Chatbot(commands.Cog):
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
     MODEL = "gpt-5-mini"
     TEMPERATURE = 0.7
-    MAX_OUTPUT_TOKENS = 700
-    REQUEST_TIMEOUT_SECONDS = 20
+    MAX_OUTPUT_TOKENS = 5000
+    REQUEST_TIMEOUT_SECONDS = 70
     MAX_HISTORY_MESSAGES = 10
     MAX_HISTORY_CHARS = 5000
 
-    RETRY_TOKEN_STEPS = (700, 350, 180)
+    RETRY_TOKEN_STEPS = (5000, 1200, 700, 350)
+    FINAL_FALLBACK_TOKENS = 220
 
     def __init__(self, bot):
         self.bot = bot
@@ -109,6 +110,34 @@ class Chatbot(commands.Cog):
 
         return list(reversed(result))
 
+    async def _create_completion(self, messages: list[dict], tokens: int, temperature: float, timeout: int):
+        """게이트웨이별 파라미터 차이를 흡수하여 completion을 생성합니다."""
+        base_kwargs = {
+            "model": self.MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "timeout": timeout,
+        }
+
+        # gpt-5 계열은 max_completion_tokens를 우선 시도
+        try:
+            return await self.client.chat.completions.create(
+                **base_kwargs,
+                max_completion_tokens=tokens,
+            )
+        except TypeError:
+            pass
+        except Exception as e:
+            err = str(e).lower()
+            if "max_completion_tokens" not in err and "unknown" not in err and "unexpected" not in err:
+                raise
+
+        # 호환되지 않으면 max_tokens로 폴백
+        return await self.client.chat.completions.create(
+            **base_kwargs,
+            max_tokens=tokens,
+        )
+
     # ── 메시지 이벤트 ─────────────────────────────────────
 
     @commands.Cog.listener()
@@ -153,11 +182,10 @@ class Chatbot(commands.Cog):
 
             for max_tokens in self.RETRY_TOKEN_STEPS:
                 try:
-                    completion = await self.client.chat.completions.create(
-                        model=self.MODEL,
+                    completion = await self._create_completion(
                         messages=api_messages,
+                        tokens=max_tokens,
                         temperature=self.TEMPERATURE,
-                        max_tokens=max_tokens,
                         timeout=self.REQUEST_TIMEOUT_SECONDS,
                     )
                     if not completion.choices:
@@ -173,13 +201,38 @@ class Chatbot(commands.Cog):
                 except Exception as e:
                     last_error = e
 
+            # 대화 히스토리 때문에 지연되는 경우를 대비한 최종 경량 시도
+            if not reply_text:
+                minimal_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "질문에 대해 반드시 답변하세요. "
+                            "답변은 핵심 위주로 3~6문장 이내로 작성하세요."
+                        ),
+                    },
+                    {"role": "user", "content": user_content[:1200]},
+                ]
+
+                try:
+                    completion = await self._create_completion(
+                        messages=minimal_messages,
+                        tokens=self.FINAL_FALLBACK_TOKENS,
+                        temperature=0.4,
+                        timeout=25,
+                    )
+                    if completion.choices and completion.choices[0].message.content:
+                        reply_text = completion.choices[0].message.content.strip()
+                except Exception as e:
+                    last_error = e
+
             if not reply_text:
                 await self.log(
                     f"챗봇 응답 생성 실패(모든 재시도 실패): {last_error} "
                     f"[길드: {message.guild.name}({guild_id}), 유저: {message.author}({user_id})]"
                 )
                 await message.reply(
-                    "요청한 내용이 길거나 복잡해 응답 생성이 지연되었습니다. 핵심만 먼저 답변하면: 질문을 더 작은 단위로 나누어 보내주시면 즉시 이어서 답변하겠습니다.",
+                    "지금은 상세 생성에 실패했지만, 핵심만 먼저 답변하면 해당 주제는 단계별로 나눠 설명하면 해결할 수 있습니다. 질문을 한 문단씩 나눠 보내주시면 바로 이어서 답변하겠습니다.",
                     mention_author=False,
                 )
                 return
