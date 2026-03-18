@@ -17,7 +17,8 @@ python main.py
 Required in a `.env` file (loaded via `python-dotenv`):
 - `DISCORD_BOT_TOKEN` — Discord bot token
 - `APPLICATION_ID` — Discord application ID
-- `OPENAI_API_KEY` — OpenAI API key for fortune generation
+- `FACTCHAT_API_KEY` — FactChat API key (운세·챗봇 기능, base_url: `https://factchat-cloud.mindlogic.ai/v1/gateway`)
+- `GUILD_IDS` — comma-separated guild IDs (e.g. `123,456`)
 
 ## Architecture
 
@@ -27,25 +28,35 @@ DinzBot is a Korean-language Discord bot built with discord.py using a **Cog-bas
 
 **Cog loading order matters:** `Scheduler` is loaded first because other cogs register tasks with it at startup.
 
-### Core modules (in `src/core/`, not all present in repo)
-- `birthday_db.py` — async SQLite operations for birthday data
-- `fortune_db.py` — async SQLite operations for fortune data
-- `admin_utils.py` — exports `GUILD_IDS`, `only_in_guild()`, `is_guild_admin()` decorators
+### Core modules (`src/core/`)
+- `birthday_db.py` — async SQLite, birthday data (`data/birthdays.db`)
+- `fortune_db.py` — sync JSON, fortune data (`data/fortune_db.json`)
+- `chatbot_db.py` — async SQLite, conversation history (`data/chatbot.db`, max 20 msgs/user)
+- `admin_utils.py` — `GUILD_IDS`, `only_in_guild()`, `is_guild_admin()` decorators
 
-### Feature cogs (`src/`)
+### Feature cogs
 | Cog | Responsibility |
 |-----|---------------|
-| `Scheduler.py` | Central scheduler; runs every minute, executes daily (hour/minute) and one-time (datetime) tasks registered by other cogs |
-| `Birthday.py` | Modal-based birthday registration, slash commands, edit limit (max 2 per user) |
-| `BirthdayInterface.py` | Maintains a live birthday list message in a channel; auto-updates at midnight |
-| `FortuneCommand.py` | `*운세` command — ChatGPT fortune with eligibility check (one per day per user) |
-| `FortuneConfig.py` | `*운세설정` admin command — configure fortune feature, roles, buttons |
-| `FortuneTimer.py` | Midnight task — decrements user counts, syncs roles, sends scheduled mentions |
+| `src/utils/Scheduler.py` | Central scheduler; runs every minute, executes daily/one-time tasks registered by other cogs |
+| `src/birthday/Birthday.py` | Modal-based birthday registration, edit limit (max 2 per user) |
+| `src/birthday/BirthdayInterface.py` | Live birthday list message in a channel; auto-updates at midnight via Scheduler |
+| `src/fortune/FortuneCommand.py` | `*운세` — AI fortune (FactChat API), one per day per user |
+| `src/fortune/FortuneConfig.py` | `*운세설정` admin — channel, role, send times, target users, buttons |
+| `src/fortune/FortuneTimer.py` | Midnight task — decrements counts, syncs roles, scheduled mentions |
+| `src/chatbot/Chatbot.py` | `*챗봇설정` admin — AI chatbot with per-user conversation memory |
 
 ### Data storage
-- SQLite via `aiosqlite` (async)
+- SQLite via `aiosqlite` (async) — birthday, chatbot
+- JSON file — fortune config/data (`data/fortune_db.json`)
 - `config/birthday_config.json` — per-guild birthday channel/message IDs
+- `config/chatbot_config.json` — per-guild chatbot channel ID
 - Timezone: `Asia/Seoul` (KST) — all scheduled tasks use this timezone
+
+### AI API (운세·챗봇 공통)
+- Provider: FactChat (MindLogic) — OpenAI-compatible gateway
+- `base_url`: `https://factchat-cloud.mindlogic.ai/v1/gateway`
+- Model: `gpt-5.2`
+- Client: `AsyncOpenAI(api_key=FACTCHAT_API_KEY, base_url=BASE_URL)`
 
 ### Bot conventions
 - Command prefix: `*` (e.g., `*운세`, `*sync`)
