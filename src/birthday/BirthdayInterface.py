@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import pytz
+import aiohttp
 from src.core.admin_utils import GUILD_IDS, only_in_guild, is_guild_admin
 
 CONFIG_PATH = Path("config/birthday_config.json")
@@ -82,6 +83,20 @@ class BirthdayInterface(commands.Cog):
             return config[guild_key]
         return None
 
+    def get_celebration_channel_id(self, guild_id: int):
+        """특정 길드의 생일 축하 채널 설정 조회"""
+        config = load_config()
+        guild_key = str(guild_id)
+        return config.get(guild_key, {}).get("celebration_channel_id")
+
+    def set_celebration_channel_id(self, guild_id: int, channel_id: int | None):
+        """특정 길드의 생일 축하 채널 설정 저장"""
+        config = load_config()
+        guild_key = str(guild_id)
+        config.setdefault(guild_key, {})["celebration_channel_id"] = channel_id
+        config[guild_key]["last_updated"] = datetime.now(KST).isoformat()
+        save_config(config)
+
     def set_channel_config(self, guild_id: int, channel_id: int, message_id: int = None):
         """생일 채널 설정 저장"""
         config = load_config()
@@ -96,6 +111,20 @@ class BirthdayInterface(commands.Cog):
         config[guild_key]["last_updated"] = datetime.now(KST).isoformat()
 
         save_config(config)
+
+    def set_last_congrats_date(self, guild_id: int, date_str: str):
+        """생일 축하 메시지를 보낸 날짜 저장"""
+        config = load_config()
+        guild_key = str(guild_id)
+        config.setdefault(guild_key, {})["last_congrats_date"] = date_str
+        config[guild_key]["last_updated"] = datetime.now(KST).isoformat()
+        save_config(config)
+
+    def get_last_congrats_date(self, guild_id: int) -> str | None:
+        """생일 축하 메시지를 마지막으로 보낸 날짜 조회"""
+        config = load_config()
+        guild_key = str(guild_id)
+        return config.get(guild_key, {}).get("last_congrats_date")
 
     async def clean_invalid_users(self, guild: discord.Guild):
         """서버에 없는 유저의 생일 정보 삭제"""
@@ -131,6 +160,151 @@ class BirthdayInterface(commands.Cog):
 
         delta = birthday_next - today
         return delta.days
+
+    async def get_today_birthdays(self, guild: discord.Guild) -> list[discord.Member]:
+        """오늘 생일인 서버 멤버 목록 조회"""
+        now = datetime.now(KST)
+        all_birthdays = await birthday_db.get_all_birthdays()
+        member_ids = {str(member.id) for member in guild.members}
+
+        today_birthdays = [
+            b for b in all_birthdays
+            if b["user_id"] in member_ids and b["month"] == now.month and b["day"] == now.day
+        ]
+
+        members = []
+        for b in today_birthdays:
+            member = guild.get_member(int(b["user_id"]))
+            if member:
+                members.append(member)
+
+        return members
+
+    async def get_weather_summary(self) -> tuple[str, str]:
+        """서울 기준 오늘 날씨 요약과 주의 문구를 반환"""
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            "?latitude=37.5665&longitude=126.9780"
+            "&current=temperature_2m&timezone=Asia%2FSeoul"
+        )
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        temp = data.get("current", {}).get("temperature_2m")
+                        if temp is not None:
+                            if temp >= 28:
+                                return (
+                                    f"오늘 기온은 약 {temp:.1f}도 정도로 더운 편입니다.",
+                                    "더위에 지치지 않도록 수분 섭취를 자주 하고, 야외 활동 시 더위 조심하세요.",
+                                )
+                            if temp <= 5:
+                                return (
+                                    f"오늘 기온은 약 {temp:.1f}도 정도로 추운 편입니다.",
+                                    "체온이 떨어지지 않게 따뜻하게 입고, 감기 조심하세요.",
+                                )
+                            return (
+                                f"오늘 기온은 약 {temp:.1f}도로 무난한 편입니다.",
+                                "일교차가 있을 수 있으니 겉옷을 챙겨 컨디션 관리하세요.",
+                            )
+        except Exception:
+            pass
+
+        # 날씨 API 실패 시 계절 기반 안내
+        month = datetime.now(KST).month
+        if month in (6, 7, 8):
+            return (
+                "오늘은 여름 날씨로 체감이 더울 수 있습니다.",
+                "수분 섭취를 자주 하고, 외출 시 더위 조심하세요.",
+            )
+        if month in (12, 1, 2):
+            return (
+                "오늘은 겨울 날씨로 기온이 낮을 수 있습니다.",
+                "보온에 신경 쓰고 감기 조심하세요.",
+            )
+        return (
+            "오늘은 계절 특성상 기온 변화가 있을 수 있습니다.",
+            "아침저녁 기온 차이를 고려해 건강 관리에 유의하세요.",
+        )
+
+    def get_season_song(self) -> str:
+        """현재 계절에 어울리는 추천곡 반환"""
+        month = datetime.now(KST).month
+        if month in (3, 4, 5):
+            return "Busker Busker - 벚꽃 엔딩"
+        if month in (6, 7, 8):
+            return "Dua Lipa - Levitating"
+        if month in (9, 10, 11):
+            return "AKMU - 어떻게 이별까지 사랑하겠어, 널 사랑하는 거지"
+        return "Mariah Carey - All I Want for Christmas Is You"
+
+    async def send_birthday_congratulation(self, guild: discord.Guild, force: bool = False):
+        """오늘 생일인 유저에게 장문 축하 메시지를 전송"""
+        birthday_members = await self.get_today_birthdays(guild)
+        if not birthday_members:
+            return
+
+        today_str = datetime.now(KST).strftime("%Y-%m-%d")
+        if not force and self.get_last_congrats_date(guild.id) == today_str:
+            return
+
+        channel_id = self.get_celebration_channel_id(guild.id)
+        if not channel_id:
+            await self.log(
+                f"생일 축하채널이 설정되지 않아 축하 메시지를 전송하지 못함 "
+                f"[길드: {guild.name}({guild.id})]"
+            )
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            await self.log(
+                f"생일 축하채널을 찾을 수 없음 "
+                f"[길드: {guild.name}({guild.id}), 채널 ID: {channel_id}]"
+            )
+            return
+
+        weather_line, caution_line = await self.get_weather_summary()
+        song = self.get_season_song()
+        member_mentions = " ".join(member.mention for member in birthday_members)
+        now = datetime.now(KST)
+
+        lines = [
+            f"@everyone {member_mentions}",
+            f"오늘은 {now.year}년 {now.month}월 {now.day}일입니다.",
+            f"생일을 맞이한 {member_mentions}님, 진심으로 축하드립니다.",
+            "새로운 한 해를 시작하는 오늘이 의미 있는 하루가 되길 바랍니다.",
+            "지금까지 쌓아 온 노력과 경험이 앞으로 더 큰 힘이 되기를 응원합니다.",
+            "오늘만큼은 하고 싶은 일과 좋아하는 일을 충분히 즐기세요.",
+            "주변의 따뜻한 마음과 축하를 마음껏 받는 하루가 되었으면 좋겠습니다.",
+            "작은 계획 하나도 좋은 결과로 이어지는 즐거운 날이 되길 바랍니다.",
+            weather_line,
+            caution_line,
+            "식사와 휴식도 꼭 챙기면서 몸 상태를 편안하게 유지하세요.",
+            "오늘의 기분 좋은 순간이 오래 기억에 남는 소중한 추억이 되길 바랍니다.",
+            f"계절 추천곡: {song}",
+            "추천곡과 함께 여유롭게 하루를 마무리해 보세요.",
+            "앞으로의 한 해도 건강하고 안전하게, 원하는 목표를 이루시길 바랍니다.",
+            "다시 한번 생일을 진심으로 축하드립니다.",
+        ]
+
+        try:
+            await channel.send(
+                "\n".join(lines),
+                allowed_mentions=discord.AllowedMentions(everyone=True, users=True, roles=False),
+            )
+            self.set_last_congrats_date(guild.id, today_str)
+            await self.log(
+                f"생일 축하 메시지 전송 완료 [길드: {guild.name}({guild.id}), 채널: {channel.name}({channel.id}), 대상: {', '.join(str(m.id) for m in birthday_members)}]"
+            )
+        except Exception as e:
+            await self.log(
+                f"생일 축하 메시지 전송 실패: {e} "
+                f"[길드: {guild.name}({guild.id}), 채널 ID: {channel_id}]"
+            )
 
     async def create_birthday_message(self, guild: discord.Guild) -> str:
         """생일 정보 메시지 생성 (Markdown 형식)"""
@@ -321,6 +495,7 @@ class BirthdayInterface(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if guild:
                 await self.update_birthday_message(guild)
+                await self.send_birthday_congratulation(guild)
 
     @commands.group(name="생일설정", invoke_without_command=True)
     @only_in_guild()
@@ -334,8 +509,9 @@ class BirthdayInterface(commands.Cog):
         embed.add_field(
             name="관리자 전용 명령어",
             value=(
-                "`*생일설정 채널등록 [채널]` : 생일 표시 채널을 설정합니다. (채널 미입력 시 현재 채널)\n"
-                "`*생일설정 강제갱신` : 서버 멤버 검증 및 생일 메시지를 강제로 갱신합니다.\n"
+                "`?!생일설정 채널등록 [채널]` : 생일 표시 채널을 설정합니다. (채널 미입력 시 현재 채널)\n"
+                "`?!생일설정 축하채널 [채널]` : 생일 축하 메시지를 전송할 채널을 설정합니다. (채널 미입력 시 현재 채널)\n"
+                "`?!생일설정 강제갱신` : 서버 멤버 검증 및 생일 메시지를 강제로 갱신합니다.\n"
             ),
             inline=False
         )
@@ -397,6 +573,34 @@ class BirthdayInterface(commands.Cog):
 
         await self.log(log_msg)
 
+    @birthday_setup.command(name="축하채널")
+    @only_in_guild()
+    @commands.has_permissions(administrator=True)
+    async def set_celebration_channel(self, ctx, channel: discord.TextChannel = None):
+        """생일 축하 채널 등록"""
+        target_channel = channel or ctx.channel
+        self.set_celebration_channel_id(ctx.guild.id, target_channel.id)
+
+        embed = discord.Embed(
+            title="생일 축하채널 설정 완료",
+            description=(
+                f"{target_channel.mention} 채널을 생일 축하채널로 설정했습니다.\n"
+                "자정 또는 강제갱신 시 오늘 생일인 유저가 있으면 @everyone과 함께 축하 메시지를 전송합니다."
+            ),
+            colour=discord.Colour.from_rgb(151, 214, 181),
+        )
+        embed.set_footer(
+            text=f"요청자: {ctx.author}",
+            icon_url=ctx.author.display_avatar.url
+        )
+        embed.timestamp = ctx.message.created_at
+
+        await ctx.reply(embed=embed)
+        await self.log(
+            f"{ctx.author}({ctx.author.id})이 생일 축하채널을 {target_channel.name}({target_channel.id})로 설정함 "
+            f"[길드: {ctx.guild.name}({ctx.guild.id})]"
+        )
+
     @birthday_setup.command(name="강제갱신")
     @only_in_guild()
     @commands.has_permissions(administrator=True)
@@ -423,10 +627,12 @@ class BirthdayInterface(commands.Cog):
 
         # 생일 메시지 업데이트
         await self.update_birthday_message(ctx.guild)
+        await self.send_birthday_congratulation(ctx.guild, force=True)
 
         description = "서버 멤버 검증 및 생일 달력 갱신을 완료했습니다."
         if deleted_users:
             description += f"\n서버를 떠난 멤버 {len(deleted_users)}명의 생일 정보를 삭제했습니다."
+        description += "\n오늘 생일인 유저가 있고 축하채널이 설정되어 있으면 축하 메시지를 전송했습니다."
 
         embed = discord.Embed(
             title="🎂 강제갱신 완료",

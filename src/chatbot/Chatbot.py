@@ -53,7 +53,10 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "gpt-5.2"
+    MODEL = "gpt-5-mini"
+    TEMPERATURE = 0.7
+    MAX_OUTPUT_TOKENS = 400
+    REQUEST_TIMEOUT_SECONDS = 25
 
     def __init__(self, bot):
         self.bot = bot
@@ -132,10 +135,18 @@ class Chatbot(commands.Cog):
                 completion = await self.client.chat.completions.create(
                     model=self.MODEL,
                     messages=api_messages,
-                    temperature=0.9,
-                    max_tokens=1000,
+                    temperature=self.TEMPERATURE,
+                    max_tokens=self.MAX_OUTPUT_TOKENS,
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
                 )
-                reply_text = completion.choices[0].message.content.strip()
+                if not completion.choices:
+                    raise ValueError("모델 응답 choices가 비어 있습니다.")
+
+                raw_text = completion.choices[0].message.content
+                if not raw_text:
+                    raise ValueError("모델 응답 content가 비어 있습니다.")
+
+                reply_text = raw_text.strip()
             except Exception as e:
                 await self.log(
                     f"챗봇 응답 생성 실패: {e} "
