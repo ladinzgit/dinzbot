@@ -58,7 +58,7 @@ class FortuneCommand(commands.Cog):
             return
 
         if not target:
-            await ctx.reply("운세 대상에 등록되어 있지 않다묘... 관리자가 등록해줘야 *운세 명령을 쓸 수 있다묘!")
+            await ctx.reply("운세 대상에 등록되어 있지 않습니다. 관리자에게 등록을 요청해 주세요.")
             return
 
         try:
@@ -68,22 +68,22 @@ class FortuneCommand(commands.Cog):
 
         today_str = datetime.now(KST).strftime("%Y-%m-%d")
         if target.get("last_used_date") == today_str:
-            await ctx.reply("오늘은 이미 운세를 봤다묘! 내일 다시 찾아와달라묘.", mention_author=False)
+            await ctx.reply("오늘의 운세는 이미 확인하셨습니다. 내일 다시 이용해 주세요.", mention_author=False)
             return
 
         if remaining_count <= 0:
             fortune_db.remove_target(ctx.guild.id, ctx.author.id)
-            await ctx.reply("등록 기간이 끝난 것 같다묘. 다시 등록받아달라묘!")
+            await ctx.reply("사용 가능한 운세 횟수가 소진되었습니다. 관리자에게 재등록을 요청해 주세요.")
             return
 
         self._ensure_client()
         if not self.api_key:
-            await ctx.reply("API 키가 설정되어 있지 않다묘... `FACTCHAT_API_KEY` 환경 변수를 넣어달라묘!")
+            await ctx.reply("`FACTCHAT_API_KEY` 환경 변수가 설정되어 있지 않습니다.")
             return
 
         birthday = await birthday_db.get_birthday(str(ctx.author.id))
         if not birthday:
-            await ctx.reply("생일 정보가 없다묘! <#1474014240036749388>에서 생일을 등록해달라묘.")
+            await ctx.reply("생일 정보가 없습니다. <#1474014240036749388>에서 먼저 생일을 등록해 주세요.")
             return
 
         birth_year = birthday.get("year")
@@ -91,7 +91,7 @@ class FortuneCommand(commands.Cog):
         day = birthday.get("day")
 
         if not month or not day:
-            await ctx.reply("생일 데이터가 이상하다묘... 다시 등록해달라묘!")
+            await ctx.reply("생일 데이터를 불러오는 데 문제가 생겼습니다. 생일을 다시 등록해 주세요.")
             return
 
         today = datetime.now(KST)
@@ -126,20 +126,20 @@ class FortuneCommand(commands.Cog):
         """관리자 권한으로 제약 없이 운세를 생성"""
         self._ensure_client()
         if not self.api_key:
-            await ctx.reply("ChatGPT API 키가 설정되어 있지 않다묘...")
+            await ctx.reply("`FACTCHAT_API_KEY` 환경 변수가 설정되어 있지 않습니다.")
             return
 
         birthday = await birthday_db.get_birthday(str(ctx.author.id))
         if not birthday:
-            await ctx.reply("강제 운세라도 생일 정보는 있어야 한다묘! <#1396829221741002796>에서 등록해달라묘.")
+            await ctx.reply("강제 운세를 사용하려면 생일 정보가 필요합니다. <#1396829221741002796>에서 먼저 등록해 주세요.")
             return
-            
+
         birth_year = birthday.get("year")
         month = birthday.get("month")
         day = birthday.get("day")
 
         if not month or not day:
-            await ctx.reply("생일 데이터가 이상하다묘...")
+            await ctx.reply("생일 데이터를 불러오는 데 문제가 생겼습니다.")
             return
 
         today = datetime.now(KST)
@@ -157,20 +157,18 @@ class FortuneCommand(commands.Cog):
         prompt = f"{birth_text} {today_text} 오늘의 운세를 알려줘"
 
         try:
-            waiting_message = await ctx.reply("운세를 불러오는 중이다묘... 잠시만 기다려달라묘!", mention_author=False)
-            
+            waiting_message = await ctx.reply("운세를 불러오는 중입니다. 잠시만 기다려 주세요.", mention_author=False)
+
             completion = await self.client.chat.completions.create(
                 model="gpt-5.2",
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "너는 디스코드 봇 '하묘'야. 말을 하는 토끼 컨셉이야.\n\n"
+                            "너는 오늘의 운세를 알려주는 AI야. 친절하고 따뜻한 말투를 사용해.\n\n"
                             "【말투 규칙】\n"
-                            "- 모든 문장은 '~거다묘.', '~할거다묘.', '~보라묘.', '~좋겠구나묘.' 처럼 '묘'로 끝나\n"
-                            "- 평서문은 반드시 마침표(.)로 끝내고, 질문문만 물음표(?)로 끝내\n"
-                            "- '묘' 바로 뒤에 마침표/물음표를 붙여 (예: 거다묘. / 되냐묘?)\n"
-                            "- 그 외 모든 한국어 띄어쓰기는 완벽하게 지켜\n"
+                            "- 표준 한국어 존댓말을 사용해 (예: ~입니다, ~해요, ~네요)\n"
+                            "- 한국어 띄어쓰기를 정확하게 지켜\n"
                             "- 친근하고 따뜻한 톤 유지, 부정적/공포/오싹한 내용 금지\n\n"
                             "【출력 형식 - 반드시 준수】\n"
                             "서론, 인사말, 부연 설명 없이 운세 본문부터 바로 시작해.\n\n"
@@ -180,7 +178,7 @@ class FortuneCommand(commands.Cog):
                             "(빈 줄)\n"
                             "세 번째 문단 (4~5줄): 컨디션·건강 상태, 금전·소비운, 오늘 하루를 잘 마무리하기 위한 구체적인 조언을 각각 담아.\n"
                             "(빈 줄)\n"
-                            "**요약:** (한 문장 요약)묘.\n"
+                            "**요약:** (한 문장 요약).\n"
                             "**행운의 상징:** 아래 항목 목록에서 매번 다른 6가지를 골라 표시해. 고른 항목과 키워드 모두 매번 신선하고 다양하게 바꿔.\n"
                             "선택 가능 항목: 행동, 장소, 색깔, 음식, 숫자, 방향, 동물, 시간대, 날씨, 물건, 꽃, 감정\n"
                             "형식: 항목명-(키워드), 항목명-(키워드), 항목명-(키워드), 항목명-(키워드), 항목명-(키워드), 항목명-(키워드)\n\n"
@@ -199,13 +197,14 @@ class FortuneCommand(commands.Cog):
             )
             fortune_text = completion.choices[0].message.content.strip()
         except Exception as e:
+            error_msg = "운세를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
             if waiting_message:
                 try:
-                    await waiting_message.edit(content="운세를 불러오다 미끄러졌다묘... 잠시 후 다시 시도해달라묘!")
+                    await waiting_message.edit(content=error_msg)
                 except Exception:
-                    await ctx.reply("운세를 불러오다 미끄러졌다묘... 잠시 후 다시 시도해달라묘!", mention_author=False)
+                    await ctx.reply(error_msg, mention_author=False)
             else:
-                await ctx.reply("운세를 불러오다 미끄러졌다묘... 잠시 후 다시 시도해달라묘!", mention_author=False)            
+                await ctx.reply(error_msg, mention_author=False)
             await self.log(f"운세 생성 오류: {e} [길드: {ctx.guild.name}({ctx.guild.id}), 사용자: {ctx.author}({ctx.author.id})]")
             return
 
