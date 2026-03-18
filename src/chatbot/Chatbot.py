@@ -54,8 +54,8 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "gpt-5-mini"
-    TEMPERATURE = 0.7
+    MODEL = "gpt-5.4"
+    TEMPERATURE = 1.0
     MAX_OUTPUT_TOKENS = 5000
     REQUEST_TIMEOUT_SECONDS = 70
     MAX_HISTORY_MESSAGES = 10
