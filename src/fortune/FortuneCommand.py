@@ -143,7 +143,7 @@ class FortuneCommand(commands.Cog):
             waiting_message = await ctx.reply("운세를 불러오는 중입니다. 잠시만 기다려 주세요.", mention_author=False)
 
             completion = await self.client.chat.completions.create(
-                model="gpt-5.2",
+                model="gpt-5.4",
                 messages=[
                     {
                         "role": "system",
@@ -180,9 +180,12 @@ class FortuneCommand(commands.Cog):
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=1.0,
+                temperature=0.85,
+                top_p=0.9,
+                presence_penalty=0.6,
+                frequency_penalty=0.4,
                 reasoning_effort="low",
-                max_completion_tokens=3000,
+                max_completion_tokens=1500,
             )
             fortune_text = completion.choices[0].message.content.strip()
         except Exception as e:
