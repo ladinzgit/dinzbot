@@ -57,6 +57,35 @@ class FortuneCommand(commands.Cog):
         idx = (user_id + today.toordinal()) % len(variants)
         return variants[idx]
 
+    def _get_zodiac_info(self, month: int, day: int) -> tuple[str, str]:
+        """월/일 기준 서양 별자리와 핵심 성향 키워드를 반환합니다."""
+        value = month * 100 + day
+
+        if 120 <= value <= 218:
+            return "물병자리", "독창성, 독립성, 관찰력"
+        if 219 <= value <= 320:
+            return "물고기자리", "공감력, 직관, 상상력"
+        if 321 <= value <= 419:
+            return "양자리", "추진력, 결단력, 도전 성향"
+        if 420 <= value <= 520:
+            return "황소자리", "안정 지향, 인내심, 감각적 판단"
+        if 521 <= value <= 621:
+            return "쌍둥이자리", "기민함, 소통력, 유연성"
+        if 622 <= value <= 722:
+            return "게자리", "보호 본능, 섬세함, 정서적 민감성"
+        if 723 <= value <= 822:
+            return "사자자리", "표현력, 존재감, 리더십"
+        if 823 <= value <= 923:
+            return "처녀자리", "분석력, 정돈 습관, 실용성"
+        if 924 <= value <= 1023:
+            return "천칭자리", "균형 감각, 협상력, 미적 감수성"
+        if 1024 <= value <= 1122:
+            return "전갈자리", "집중력, 통찰력, 몰입도"
+        if 1123 <= value <= 1221:
+            return "사수자리", "확장성, 낙관성, 탐구심"
+
+        return "염소자리", "책임감, 꾸준함, 현실 감각"
+
     @commands.command(name="운세")
     @only_in_guild()
     async def tell_fortune(self, ctx):
@@ -96,7 +125,7 @@ class FortuneCommand(commands.Cog):
         today = datetime.now(KST)
         birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
-        await self._generate_fortune(ctx, birth_text, today)
+        await self._generate_fortune(ctx, birth_text, today, month, day)
         fortune_db.set_user_last_used(ctx.guild.id, ctx.author.id, today_str)
 
         await self.log(
@@ -129,13 +158,23 @@ class FortuneCommand(commands.Cog):
         today = datetime.now(KST)
         birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
-        await self._generate_fortune(ctx, birth_text, today)
+        await self._generate_fortune(ctx, birth_text, today, month, day)
         await self.log(f"{ctx.author}({ctx.author.id})가 관리자 권한으로 강제 운세를 조회함 [길드: {ctx.guild.name}({ctx.guild.id})]")
 
-    async def _generate_fortune(self, ctx, birth_text, today):
+    async def _generate_fortune(self, ctx, birth_text, today, month: int, day: int):
         """공통 운세 생성 로직"""
+        zodiac_name, zodiac_traits = self._get_zodiac_info(month, day)
         today_text = f"{today.year}년 {today.month}월 {today.day}일"
-        prompt = f"{birth_text} {today_text} 오늘의 운세를 알려줘"
+        prompt = (
+            "아래 정보를 해석 근거로 사용해 오늘의 운세를 작성해줘.\n"
+            f"- 생일: {birth_text}\n"
+            f"- 별자리: {zodiac_name}\n"
+            f"- 별자리 핵심 성향: {zodiac_traits}\n"
+            f"- 기준 날짜: {today_text}\n\n"
+            "요청 조건:\n"
+            "- 생일과 별자리 정보가 달라지면 결과 내용도 분명히 달라지게 작성\n"
+            "- 성향 키워드를 반복 나열하지 말고 구체적 상황과 행동 조언에 자연스럽게 반영"
+        )
         variant_instruction = self._get_prompt_variant(ctx.author.id, today)
         waiting_message = None
 
@@ -162,6 +201,8 @@ class FortuneCommand(commands.Cog):
                             "- 따뜻하지만 담백한 어조 유지\n\n"
 
                             "【콘텐츠 규칙】\n"
+                            "- 입력된 생일/별자리/성향 정보를 핵심 근거로 사용해 운세의 방향을 결정해\n"
+                            "- 같은 날짜라도 별자리가 다르면 상황, 조언, 경고 포인트가 확연히 달라지게 작성해\n"
                             "- 반드시 '구체적인 상황'을 1개 이상 포함 (예: 메시지를 늦게 확인해 오해가 생기는 상황, 회의에서 의견 타이밍을 놓치는 상황 등)\n"
                             "- 각 문단은 서로 다른 주제를 다루고 내용이 겹치지 않게 작성\n"
                             "- 긍정 70%, 주의/경고 30% 비율 유지\n"
@@ -177,24 +218,12 @@ class FortuneCommand(commands.Cog):
                             "【출력 형식 - 반드시 준수】\n"
                             "서론 없이 바로 시작\n\n"
 
-                            "첫 번째 문단 (4~5줄):\n"
-                            "- 오늘의 흐름 + 일/학업 상황\n"
-                            "- 실제로 겪을 법한 상황 1개 포함\n"
-                            "- 어떻게 행동하면 좋은지 구체적 조언\n\n"
-
-                            "(빈 줄)\n\n"
-
-                            "두 번째 문단 (4~5줄):\n"
-                            "- 인간관계 / 소통\n"
-                            "- 도움이 되는 사람 유형 + 갈등 발생 상황\n"
-                            "- 갈등을 줄이는 '말하는 방식' 제시\n\n"
-
-                            "(빈 줄)\n\n"
-
-                            "세 번째 문단 (4~5줄):\n"
-                            "- 컨디션 / 건강\n"
-                            "- 금전 / 소비\n"
-                            "- 실수 가능 상황 1~2개 + 예방 행동\n\n"
+                            "본문 문단 규칙:\n"
+                            "- 문단 수는 3~4개\n"
+                            "- 각 문단은 4~5줄\n"
+                            "- 문단별 주제는 모델이 직접 정하되, 문단끼리 주제와 표현이 겹치지 않게 구성\n"
+                            "- 최소 1개 문단에는 오늘 바로 실행 가능한 행동 지침을 분명히 포함\n"
+                            "- 최소 1개 문단에는 경고 상황 + 대응 행동을 함께 포함\n\n"
 
                             "(빈 줄)\n\n"
 
