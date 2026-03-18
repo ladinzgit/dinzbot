@@ -8,6 +8,7 @@
 
 import os
 import json
+from typing import Any
 import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
@@ -58,9 +59,9 @@ class Chatbot(commands.Cog):
     MAX_OUTPUT_TOKENS = 5000
     REQUEST_TIMEOUT_SECONDS = 70
     MAX_HISTORY_MESSAGES = 10
-    MAX_HISTORY_CHARS = 5000
+    MAX_HISTORY_CHARS = 10000
 
-    RETRY_TOKEN_STEPS = (5000, 1200, 700, 350)
+    RETRY_TOKEN_STEPS = (10000, 1200, 700, 350)
     FINAL_FALLBACK_TOKENS = 220
 
     def __init__(self, bot):
@@ -110,8 +111,8 @@ class Chatbot(commands.Cog):
 
         return list(reversed(result))
 
-    async def _create_completion(self, messages: list[dict], tokens: int, temperature: float, timeout: int):
-        """게이트웨이별 파라미터 차이를 흡수하여 completion을 생성합니다."""
+    async def _create_chat_completion(self, messages: list[dict], tokens: int, temperature: float, timeout: int):
+        """게이트웨이별 파라미터 차이를 흡수하여 Chat Completions를 생성합니다."""
         base_kwargs = {
             "model": self.MODEL,
             "messages": messages,
@@ -137,6 +138,61 @@ class Chatbot(commands.Cog):
             **base_kwargs,
             max_tokens=tokens,
         )
+
+    def _extract_responses_text(self, response: Any) -> str:
+        """Responses API 응답에서 텍스트를 추출합니다."""
+        direct = getattr(response, "output_text", None)
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        chunks: list[str] = []
+        for item in getattr(response, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+                elif hasattr(text, "value") and isinstance(text.value, str):
+                    chunks.append(text.value)
+
+        return "".join(chunks).strip()
+
+    async def _create_model_text(self, messages: list[dict], tokens: int, temperature: float, timeout: int) -> str:
+        """Responses API를 우선 사용하고 실패 시 Chat Completions로 폴백합니다."""
+        last_error = None
+
+        # 1) Responses API 우선 시도
+        try:
+            response = await self.client.responses.create(
+                model=self.MODEL,
+                input=messages,
+                temperature=temperature,
+                max_output_tokens=tokens,
+                timeout=timeout,
+            )
+            text = self._extract_responses_text(response)
+            if text:
+                return text
+            last_error = ValueError("Responses API 응답에서 텍스트를 추출하지 못했습니다.")
+        except Exception as e:
+            last_error = e
+
+        # 2) Chat Completions 폴백
+        try:
+            completion = await self._create_chat_completion(
+                messages=messages,
+                tokens=tokens,
+                temperature=temperature,
+                timeout=timeout,
+            )
+            if not completion.choices:
+                raise ValueError("모델 응답 choices가 비어 있습니다.")
+
+            raw_text = completion.choices[0].message.content
+            if isinstance(raw_text, str) and raw_text.strip():
+                return raw_text.strip()
+            raise ValueError("모델 응답 content가 비어 있습니다.")
+        except Exception as e:
+            raise RuntimeError(f"responses/chat.completions 모두 실패: {e} | responses_error: {last_error}")
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
@@ -182,20 +238,12 @@ class Chatbot(commands.Cog):
 
             for max_tokens in self.RETRY_TOKEN_STEPS:
                 try:
-                    completion = await self._create_completion(
+                    reply_text = await self._create_model_text(
                         messages=api_messages,
                         tokens=max_tokens,
                         temperature=self.TEMPERATURE,
                         timeout=self.REQUEST_TIMEOUT_SECONDS,
                     )
-                    if not completion.choices:
-                        raise ValueError("모델 응답 choices가 비어 있습니다.")
-
-                    raw_text = completion.choices[0].message.content
-                    if not raw_text:
-                        raise ValueError("모델 응답 content가 비어 있습니다.")
-
-                    reply_text = raw_text.strip()
                     if reply_text:
                         break
                 except Exception as e:
@@ -215,14 +263,12 @@ class Chatbot(commands.Cog):
                 ]
 
                 try:
-                    completion = await self._create_completion(
+                    reply_text = await self._create_model_text(
                         messages=minimal_messages,
                         tokens=self.FINAL_FALLBACK_TOKENS,
                         temperature=0.4,
                         timeout=25,
                     )
-                    if completion.choices and completion.choices[0].message.content:
-                        reply_text = completion.choices[0].message.content.strip()
                 except Exception as e:
                     last_error = e
 
