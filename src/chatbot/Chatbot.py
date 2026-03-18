@@ -22,16 +22,13 @@ load_dotenv()
 CONFIG_PATH = Path("config/chatbot_config.json")
 
 SYSTEM_PROMPT = (
-    "너는 디스코드 봇 '하묘'야. 말을 하는 토끼 컨셉이야.\n\n"
-    "【말투 규칙】\n"
-    "- 모든 문장은 '~다묘.', '~냐묘?', '~라묘!' 처럼 반드시 '묘'로 끝나\n"
-    "- 평서문은 마침표(.), 질문은 물음표(?), 감탄·명령은 느낌표(!)로 끝내\n"
-    "- '묘' 바로 뒤에 문장부호를 붙여 (예: 그렇다묘. / 맞냐묘? / 좋다묘!)\n"
-    "- 한국어 띄어쓰기를 정확하게 지켜\n"
-    "- 친근하고 따뜻한 톤을 유지해\n"
-    "- 상대방의 말에 공감하고 적극적으로 반응해\n"
-    "- 답변은 간결하되, 필요하다면 충분히 설명해줘\n"
-    "- 부정적이거나 혐오스러운 내용은 절대 다루지 마\n"
+    "너는 디스코드 서버에서 동작하는 한국어 챗봇이다.\n\n"
+    "[응답 규칙]\n"
+    "- 자연스럽고 일반적인 한국어 말투를 사용한다.\n"
+    "- 과한 캐릭터 말투, 유행어, 장식 문자를 사용하지 않는다.\n"
+    "- 존중하는 태도를 유지하고, 상대방 질문에 명확하게 답한다.\n"
+    "- 답변은 간결하게 작성하되 필요한 경우 핵심 정보를 충분히 설명한다.\n"
+    "- 위험하거나 혐오, 차별, 폭력, 성적 내용 등 부적절한 요청은 정중히 거절한다.\n"
 )
 
 
@@ -69,15 +66,15 @@ class Chatbot(commands.Cog):
 
     async def cog_load(self):
         await chatbot_db.init_db()
-        print(f"✅ {self.__class__.__name__} loaded successfully!")
+        print(f"{self.__class__.__name__} loaded successfully!")
 
     async def log(self, message: str):
         try:
             logger = self.bot.get_cog("Logger")
             if logger:
-                await logger.log(message, title="💬 챗봇 로그", color=discord.Color.blue())
+                await logger.log(message, title="챗봇 로그", color=discord.Color.blue())
         except Exception as e:
-            print(f"❌ {self.__class__.__name__} 로그 전송 오류: {e}")
+            print(f"{self.__class__.__name__} 로그 전송 오류: {e}")
 
     # ── 채널 설정 헬퍼 ────────────────────────────────────
 
@@ -145,7 +142,7 @@ class Chatbot(commands.Cog):
                     f"[길드: {message.guild.name}({guild_id}), 유저: {message.author}({user_id})]"
                 )
                 await message.reply(
-                    "아, 잠깐 머리가 안 돌아간다묘... 조금 이따 다시 얘기해달라묘!",
+                    "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
                     mention_author=False,
                 )
                 return
@@ -166,22 +163,16 @@ class Chatbot(commands.Cog):
         channel_text = channel.mention if channel else "미설정"
 
         embed = discord.Embed(
-            title="💬 챗봇 설정 ₍ᐢ..ᐢ₎",
-            description="""
-⠀.⠀♡ 묘묘묘... ‧₊˚ ⯎
-╭◜ᘏ ⑅ ᘏ◝  ͡  ◜◝  ͡  ◜◝╮
-(⠀⠀⠀´ㅅ` )
-(⠀ 챗봇 관련 명령어를 알려주겠다묘...✩
-╰◟◞  ͜   ◟◞  ͜  ◟◞  ͜  ◟◞╯
-""",
+            title="챗봇 설정",
+            description="챗봇 관련 관리자 명령어 안내입니다.",
             colour=discord.Colour.from_rgb(151, 214, 181),
         )
         embed.add_field(
             name="관리자 전용 명령어",
             value=(
-                "`*챗봇설정 채널 [#채널]` : 챗봇 채널 설정 (미입력 시 현재 채널)\n"
-                "`*챗봇설정 채널해제` : 챗봇 채널 해제\n"
-                "`*챗봇설정 기록초기화 [@유저]` : 대화 기록 초기화 (미입력 시 서버 전체)\n"
+                "*챗봇설정 채널 [#채널] : 챗봇 채널을 설정합니다. 채널 미입력 시 현재 채널로 설정됩니다.\n"
+                "*챗봇설정 채널해제 : 챗봇 채널 설정을 해제합니다.\n"
+                "*챗봇설정 기록초기화 [@유저] : 대화 기록을 초기화합니다. 유저 미입력 시 서버 전체를 초기화합니다.\n"
             ),
             inline=False,
         )
@@ -202,15 +193,8 @@ class Chatbot(commands.Cog):
         self._set_channel_id(ctx.guild.id, target.id)
 
         embed = discord.Embed(
-            title="💬 챗봇 채널 설정 완료 ₍ᐢ..ᐢ₎",
-            description=f"""
-⠀.⠀♡ 묘묘묘... ‧₊˚ ⯎
-╭◜ᘏ ⑅ ᘏ◝  ͡  ◜◝  ͡  ◜◝╮
-(⠀⠀⠀´ㅅ` )
-(⠀ {target.mention}을 챗봇 채널로 설정했다묘...✩
-(⠀⠀⠀⠀ 이제 해당 채널에서 하묘와 대화할 수 있다묘!
-╰◟◞  ͜   ◟◞  ͜  ◟◞  ͜  ◟◞╯
-""",
+            title="챗봇 채널 설정 완료",
+            description=f"{target.mention} 채널을 챗봇 채널로 설정했습니다. 이제 해당 채널에서 챗봇과 대화할 수 있습니다.",
             colour=discord.Colour.from_rgb(151, 214, 181),
         )
         embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
@@ -228,15 +212,8 @@ class Chatbot(commands.Cog):
         self._set_channel_id(ctx.guild.id, None)
 
         embed = discord.Embed(
-            title="💬 챗봇 채널 해제 ₍ᐢ..ᐢ₎",
-            description="""
-⠀.⠀♡ 묘묘묘... ‧₊˚ ⯎
-╭◜ᘏ ⑅ ᘏ◝  ͡  ◜◝  ͡  ◜◝╮
-(⠀⠀⠀´ㅅ` )
-(⠀ 챗봇 채널을 해제했다묘...
-(⠀⠀⠀⠀ 이제 어디서도 챗봇이 반응하지 않는다묘!
-╰◟◞  ͜   ◟◞  ͜  ◟◞  ͜  ◟◞╯
-""",
+            title="챗봇 채널 해제",
+            description="챗봇 채널 설정을 해제했습니다. 이제 챗봇이 자동으로 응답하지 않습니다.",
             colour=discord.Colour.from_rgb(151, 214, 181),
         )
         embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
@@ -259,15 +236,8 @@ class Chatbot(commands.Cog):
             target_text = "서버 전체"
 
         embed = discord.Embed(
-            title="💬 대화 기록 초기화 완료 ₍ᐢ..ᐢ₎",
-            description=f"""
-⠀.⠀♡ 묘묘묘... ‧₊˚ ⯎
-╭◜ᘏ ⑅ ᘏ◝  ͡  ◜◝  ͡  ◜◝╮
-(⠀⠀⠀´ㅅ` )
-(⠀ {target_text} 대화 기록을 초기화했다묘...✩
-(⠀⠀⠀⠀ 이제 하묘는 아무것도 기억 못한다묘...!
-╰◟◞  ͜   ◟◞  ͜  ◟◞  ͜  ◟◞╯
-""",
+            title="대화 기록 초기화 완료",
+            description=f"{target_text} 대화 기록을 초기화했습니다.",
             colour=discord.Colour.from_rgb(151, 214, 181),
         )
         embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)

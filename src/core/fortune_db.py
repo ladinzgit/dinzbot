@@ -51,13 +51,31 @@ def _save(data: dict):
 def _guild(data: dict, guild_id) -> dict:
     key = str(guild_id)
     if key not in data:
-        data[key] = {"config": {}, "targets": {}, "buttons": {}}
+        data[key] = {"config": {}, "targets": {}, "buttons": {}, "daily_usage": {}}
     # 누락된 키 보완
     g = data[key]
     g.setdefault("config", {})
     g.setdefault("targets", {})
     g.setdefault("buttons", {})
+    g.setdefault("daily_usage", {})
     return g
+
+
+# ── 전체 유저 일일 사용 ──────────────────────────────────
+
+def get_user_last_used(guild_id, user_id) -> str | None:
+    """유저의 마지막 운세 사용 날짜를 반환합니다."""
+    with _lock:
+        data = _load()
+        return _guild(data, guild_id)["daily_usage"].get(str(user_id))
+
+
+def set_user_last_used(guild_id, user_id, date_str: str):
+    """유저의 마지막 운세 사용 날짜를 저장합니다."""
+    with _lock:
+        data = _load()
+        _guild(data, guild_id)["daily_usage"][str(user_id)] = date_str
+        _save(data)
 
 
 # ── 길드 설정 ────────────────────────────────────────────

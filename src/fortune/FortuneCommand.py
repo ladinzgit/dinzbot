@@ -25,19 +25,17 @@ class FortuneCommand(commands.Cog):
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.BASE_URL) if self.api_key else None
 
     async def cog_load(self):
-        print(f"🐾{self.__class__.__name__} loaded successfully!")
+        print(f"✅ {self.__class__.__name__} loaded successfully!")
 
     async def log(self, message: str):
-        """Logger cog를 통해 로그 메시지 전송"""
         try:
             logger = self.bot.get_cog("Logger")
             if logger:
                 await logger.log(message, title="🍀 운세 시스템 로그", color=discord.Color.green())
         except Exception as e:
-            print(f"🐾{self.__class__.__name__} 로그 전송 오류 발생: {e}")
+            print(f"❌ {self.__class__.__name__} 로그 전송 오류 발생: {e}")
 
     def _ensure_client(self):
-        """API 키 변경 시 새 클라이언트를 준비"""
         current_key = os.environ.get("FACTCHAT_API_KEY")
         if current_key != self.api_key:
             self.api_key = current_key
@@ -48,32 +46,19 @@ class FortuneCommand(commands.Cog):
     @commands.command(name="운세")
     @only_in_guild()
     async def tell_fortune(self, ctx):
-        """운세를 생성하여 전송"""
+        """오늘의 운세를 생성하여 전송합니다. 하루에 한 번 사용 가능합니다."""
         config = fortune_db.get_guild_config(ctx.guild.id)
-        target = fortune_db.get_target(ctx.guild.id, ctx.author.id)
 
         # 설정된 채널에서만 사용 가능
         channel_id = config.get("channel_id")
         if channel_id and ctx.channel.id != channel_id:
             return
 
-        if not target:
-            await ctx.reply("운세 대상에 등록되어 있지 않습니다. 관리자에게 등록을 요청해 주세요.")
-            return
-
-        try:
-            remaining_count = int(target.get("count", 0))
-        except (ValueError, TypeError):
-            remaining_count = 0
-
+        # 하루 1회 제한 확인
         today_str = datetime.now(KST).strftime("%Y-%m-%d")
-        if target.get("last_used_date") == today_str:
+        last_used = fortune_db.get_user_last_used(ctx.guild.id, ctx.author.id)
+        if last_used == today_str:
             await ctx.reply("오늘의 운세는 이미 확인하셨습니다. 내일 다시 이용해 주세요.", mention_author=False)
-            return
-
-        if remaining_count <= 0:
-            fortune_db.remove_target(ctx.guild.id, ctx.author.id)
-            await ctx.reply("사용 가능한 운세 횟수가 소진되었습니다. 관리자에게 재등록을 요청해 주세요.")
             return
 
         self._ensure_client()
@@ -95,35 +80,20 @@ class FortuneCommand(commands.Cog):
             return
 
         today = datetime.now(KST)
-
-        if birth_year:
-            birth_text = f"{birth_year}년 {month}월 {day}일생"
-        else:
-            birth_text = f"생년 미기재 {month}월 {day}일생"
+        birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
         await self._generate_fortune(ctx, birth_text, today)
-        
-        fortune_db.mark_target_used(ctx.guild.id, ctx.author.id, today_str)
-
-        # 운세 역할 회수 (사용 중에는 멘션 대상에서 제외)
-        role_id = config.get("role_id")
-        if role_id:
-            role = ctx.guild.get_role(role_id)
-            if role:
-                try:
-                    await ctx.author.remove_roles(role, reason="운세 사용 완료로 역할 회수")
-                except Exception as e:
-                    await self.log(f"{ctx.author}({ctx.author.id}) 운세 역할 회수 실패: {e}")
+        fortune_db.set_user_last_used(ctx.guild.id, ctx.author.id, today_str)
 
         await self.log(
             f"{ctx.author}({ctx.author.id})가 운세를 조회함 "
-            f"[길드: {ctx.guild.name}({ctx.guild.id}), 남은 일수: {remaining_count}]"
+            f"[길드: {ctx.guild.name}({ctx.guild.id})]"
         )
 
     @commands.command(name="강제운세")
     @is_guild_admin()
     async def force_fortune(self, ctx):
-        """관리자 권한으로 제약 없이 운세를 생성"""
+        """관리자 권한으로 제약 없이 운세를 생성합니다."""
         self._ensure_client()
         if not self.api_key:
             await ctx.reply("`FACTCHAT_API_KEY` 환경 변수가 설정되어 있지 않습니다.")
@@ -143,10 +113,7 @@ class FortuneCommand(commands.Cog):
             return
 
         today = datetime.now(KST)
-        if birth_year:
-            birth_text = f"{birth_year}년 {month}월 {day}일생"
-        else:
-            birth_text = f"생년 미기재 {month}월 {day}일생"
+        birth_text = f"{birth_year}년 {month}월 {day}일생" if birth_year else f"생년 미기재 {month}월 {day}일생"
 
         await self._generate_fortune(ctx, birth_text, today)
         await self.log(f"{ctx.author}({ctx.author.id})가 관리자 권한으로 강제 운세를 조회함 [길드: {ctx.guild.name}({ctx.guild.id})]")
