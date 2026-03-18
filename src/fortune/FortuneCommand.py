@@ -17,10 +17,12 @@ load_dotenv()
 class FortuneCommand(commands.Cog):
     """*운세 명령어를 처리하는 Cog"""
 
+    BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
+
     def __init__(self, bot):
         self.bot = bot
-        self.api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHATGPT_API_KEY")
-        self.client = AsyncOpenAI(api_key=self.api_key) if self.api_key else None
+        self.api_key = os.environ.get("FACTCHAT_API_KEY")
+        self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.BASE_URL) if self.api_key else None
 
     async def cog_load(self):
         print(f"🐾{self.__class__.__name__} loaded successfully!")
@@ -36,12 +38,12 @@ class FortuneCommand(commands.Cog):
 
     def _ensure_client(self):
         """API 키 변경 시 새 클라이언트를 준비"""
-        current_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHATGPT_API_KEY")
+        current_key = os.environ.get("FACTCHAT_API_KEY")
         if current_key != self.api_key:
             self.api_key = current_key
             self.client = None
         if not self.client and self.api_key:
-            self.client = AsyncOpenAI(api_key=self.api_key)
+            self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.BASE_URL)
 
     @commands.command(name="운세")
     @only_in_guild()
@@ -76,7 +78,7 @@ class FortuneCommand(commands.Cog):
 
         self._ensure_client()
         if not self.api_key:
-            await ctx.reply("ChatGPT API 키가 설정되어 있지 않다묘... `OPENAI_API_KEY`(또는 `CHATGPT_API_KEY`) 환경 변수를 넣어달라묘!")
+            await ctx.reply("API 키가 설정되어 있지 않다묘... `FACTCHAT_API_KEY` 환경 변수를 넣어달라묘!")
             return
 
         birthday = await birthday_db.get_birthday(str(ctx.author.id))
