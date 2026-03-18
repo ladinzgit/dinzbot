@@ -128,7 +128,7 @@ async def get_context_history(guild_id, user_id) -> list[dict]:
             shared_part AS (
                 SELECT role, content, created_at
                 FROM conversations
-                WHERE guild_id = ? AND scope = ?
+                WHERE guild_id = ? AND scope = ? AND user_id != ?
                 ORDER BY created_at DESC
                 LIMIT ?
             )
@@ -147,6 +147,7 @@ async def get_context_history(guild_id, user_id) -> list[dict]:
                 MAX_HISTORY,
                 str(guild_id),
                 SCOPE_SHARED,
+                str(user_id),
                 MAX_SHARED_HISTORY,
             ),
         ) as cursor:
