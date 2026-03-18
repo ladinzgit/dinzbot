@@ -313,6 +313,11 @@ class Chatbot(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="일반 명령어",
+            value="*챗봇초기화 : 본인의 챗봇 대화 기록을 초기화합니다.",
+            inline=False,
+        )
+        embed.add_field(
             name="현재 설정",
             value=f"- 챗봇 채널: {channel_text}",
             inline=False,
@@ -382,6 +387,26 @@ class Chatbot(commands.Cog):
         target_log = f"{member}({member.id})" if member else "서버 전체"
         await self.log(
             f"{ctx.author}({ctx.author.id})가 {target_log} 대화 기록 초기화 "
+            f"[길드: {ctx.guild.name}({ctx.guild.id})]"
+        )
+
+    @commands.command(name="챗봇초기화", aliases=["히스토리초기화"])
+    @commands.guild_only()
+    async def reset_my_chat_history(self, ctx):
+        """본인 챗봇 대화 기록 초기화"""
+        await chatbot_db.clear_history(ctx.guild.id, ctx.author.id)
+
+        embed = discord.Embed(
+            title="대화 기록 초기화 완료",
+            description="본인의 챗봇 대화 기록을 초기화했습니다.",
+            colour=discord.Colour.from_rgb(151, 214, 181),
+        )
+        embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.timestamp = ctx.message.created_at
+        await ctx.reply(embed=embed)
+
+        await self.log(
+            f"{ctx.author}({ctx.author.id})가 본인 챗봇 대화 기록을 초기화함 "
             f"[길드: {ctx.guild.name}({ctx.guild.id})]"
         )
 
