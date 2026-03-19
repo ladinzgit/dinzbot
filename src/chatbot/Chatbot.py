@@ -54,15 +54,9 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "gpt-5.4"
-    TEMPERATURE = 1.0
-    MAX_OUTPUT_TOKENS = 5000
-    REQUEST_TIMEOUT_SECONDS = 70
+    MODEL = "grok-4-1-fast"
     MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
-
-    RETRY_TOKEN_STEPS = (10000, 1200, 700, 350)
-    FINAL_FALLBACK_TOKENS = 220
 
     def __init__(self, bot):
         self.bot = bot
@@ -111,78 +105,13 @@ class Chatbot(commands.Cog):
 
         return list(reversed(result))
 
-    async def _create_chat_completion(self, messages: list[dict], tokens: int, temperature: float, timeout: int):
-        """게이트웨이별 파라미터 차이를 흡수하여 Chat Completions를 생성합니다."""
-        base_kwargs = {
-            "model": self.MODEL,
-            "messages": messages,
-            "temperature": temperature,
-            "timeout": timeout,
-        }
-
-        # gpt-5 계열은 max_completion_tokens를 우선 시도
+    async def _create_model_text(self, messages: list[dict]) -> str:
+        """권장 엔드포인트인 Chat Completions API를 사용하여 응답을 생성합니다."""
         try:
-            return await self.client.chat.completions.create(
-                **base_kwargs,
-                max_completion_tokens=tokens,
-            )
-        except TypeError:
-            pass
-        except Exception as e:
-            err = str(e).lower()
-            if "max_completion_tokens" not in err and "unknown" not in err and "unexpected" not in err:
-                raise
-
-        # 호환되지 않으면 max_tokens로 폴백
-        return await self.client.chat.completions.create(
-            **base_kwargs,
-            max_tokens=tokens,
-        )
-
-    def _extract_responses_text(self, response: Any) -> str:
-        """Responses API 응답에서 텍스트를 추출합니다."""
-        direct = getattr(response, "output_text", None)
-        if isinstance(direct, str) and direct.strip():
-            return direct.strip()
-
-        chunks: list[str] = []
-        for item in getattr(response, "output", []) or []:
-            for content in getattr(item, "content", []) or []:
-                text = getattr(content, "text", None)
-                if isinstance(text, str) and text:
-                    chunks.append(text)
-                elif hasattr(text, "value") and isinstance(text.value, str):
-                    chunks.append(text.value)
-
-        return "".join(chunks).strip()
-
-    async def _create_model_text(self, messages: list[dict], tokens: int, temperature: float, timeout: int) -> str:
-        """Responses API를 우선 사용하고 실패 시 Chat Completions로 폴백합니다."""
-        last_error = None
-
-        # 1) Responses API 우선 시도
-        try:
-            response = await self.client.responses.create(
+            completion = await self.client.chat.completions.create(
                 model=self.MODEL,
-                input=messages,
-                temperature=temperature,
-                max_output_tokens=tokens,
-                timeout=timeout,
-            )
-            text = self._extract_responses_text(response)
-            if text:
-                return text
-            last_error = ValueError("Responses API 응답에서 텍스트를 추출하지 못했습니다.")
-        except Exception as e:
-            last_error = e
-
-        # 2) Chat Completions 폴백
-        try:
-            completion = await self._create_chat_completion(
                 messages=messages,
-                tokens=tokens,
-                temperature=temperature,
-                timeout=timeout,
+                extra_body={"effort": "none"},
             )
             if not completion.choices:
                 raise ValueError("모델 응답 choices가 비어 있습니다.")
@@ -192,7 +121,7 @@ class Chatbot(commands.Cog):
                 return raw_text.strip()
             raise ValueError("모델 응답 content가 비어 있습니다.")
         except Exception as e:
-            raise RuntimeError(f"responses/chat.completions 모두 실패: {e} | responses_error: {last_error}")
+            raise RuntimeError(f"chat.completions 실패: {e}")
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
@@ -245,18 +174,10 @@ class Chatbot(commands.Cog):
             reply_text = None
             last_error = None
 
-            for max_tokens in self.RETRY_TOKEN_STEPS:
-                try:
-                    reply_text = await self._create_model_text(
-                        messages=api_messages,
-                        tokens=max_tokens,
-                        temperature=self.TEMPERATURE,
-                        timeout=self.REQUEST_TIMEOUT_SECONDS,
-                    )
-                    if reply_text:
-                        break
-                except Exception as e:
-                    last_error = e
+            try:
+                reply_text = await self._create_model_text(messages=api_messages)
+            except Exception as e:
+                last_error = e
 
             # 대화 히스토리 때문에 지연되는 경우를 대비한 최종 경량 시도
             if not reply_text:
@@ -272,12 +193,7 @@ class Chatbot(commands.Cog):
                 ]
 
                 try:
-                    reply_text = await self._create_model_text(
-                        messages=minimal_messages,
-                        tokens=self.FINAL_FALLBACK_TOKENS,
-                        temperature=0.4,
-                        timeout=25,
-                    )
+                    reply_text = await self._create_model_text(messages=minimal_messages)
                 except Exception as e:
                     last_error = e
 
