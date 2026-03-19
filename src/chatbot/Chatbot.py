@@ -23,7 +23,7 @@ load_dotenv()
 CONFIG_PATH = Path("config/chatbot_config.json")
 
 SYSTEM_PROMPT = (
-    "너는 디스코드 서버에서 동작하는 한국어 챗봇이다.\n\n"
+    "너는 디스코드 서버에서 동작하는 한국어 챗봇, '딘즈봇'이다.\n\n"
     "[응답 규칙]\n"
     "- 다수 사용자가 있는 채널이므로, 유저 메시지는 '[이름] 내용' 형식으로 전달된다. 화자를 구분하여 자연스럽게 응답하라.\n"
     "- 자연스럽고 일반적인 한국어 말투를 사용한다.\n"
@@ -55,7 +55,7 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "grok-4-1-fast"
+    MODEL = "grok-4"
     MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
 
