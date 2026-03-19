@@ -25,6 +25,7 @@ CONFIG_PATH = Path("config/chatbot_config.json")
 SYSTEM_PROMPT = (
     "너는 디스코드 서버에서 동작하는 한국어 챗봇이다.\n\n"
     "[응답 규칙]\n"
+    "- 다수 사용자가 있는 채널이므로, 유저 메시지는 '[이름] 내용' 형식으로 전달된다. 화자를 구분하여 자연스럽게 응답하라.\n"
     "- 자연스럽고 일반적인 한국어 말투를 사용한다.\n"
     "- 과한 캐릭터 말투, 유행어, 장식 문자를 사용하지 않는다.\n"
     "- 존중하는 태도를 유지하고, 상대방 질문에 명확하게 답한다.\n"
@@ -156,7 +157,7 @@ class Chatbot(commands.Cog):
         shared_user_content = f"[{display_name}] {user_content}"
 
         # 유저 개인 기록 + 길드 공용 기록 저장
-        await chatbot_db.add_message(guild_id, user_id, "user", user_content)
+        await chatbot_db.add_message(guild_id, user_id, "user", shared_user_content)
         await chatbot_db.add_message(
             guild_id,
             user_id,
