@@ -58,6 +58,8 @@ class Chatbot(commands.Cog):
     MODEL = "grok-4"
     MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
+    DISCORD_MESSAGE_LIMIT = 2000
+    SAFE_MESSAGE_CHUNK = 1800
 
     def __init__(self, bot):
         self.bot = bot
@@ -123,6 +125,51 @@ class Chatbot(commands.Cog):
             raise ValueError("모델 응답 content가 비어 있습니다.")
         except Exception as e:
             raise RuntimeError(f"chat.completions 실패: {e}")
+
+    def _split_for_discord(self, text: str) -> list[str]:
+        """Discord 메시지 길이 제한(2000자)을 넘지 않도록 본문을 안전하게 분할합니다."""
+        body = (text or "").strip()
+        if not body:
+            return ["응답을 생성했지만 내용이 비어 있습니다."]
+
+        if len(body) <= self.DISCORD_MESSAGE_LIMIT:
+            return [body]
+
+        chunks: list[str] = []
+        remaining = body
+
+        while remaining:
+            if len(remaining) <= self.SAFE_MESSAGE_CHUNK:
+                chunks.append(remaining)
+                break
+
+            split_at = remaining.rfind("\n", 0, self.SAFE_MESSAGE_CHUNK)
+            if split_at <= 0:
+                split_at = remaining.rfind(" ", 0, self.SAFE_MESSAGE_CHUNK)
+            if split_at <= 0:
+                split_at = self.SAFE_MESSAGE_CHUNK
+
+            chunk = remaining[:split_at].strip()
+            if not chunk:
+                chunk = remaining[: self.SAFE_MESSAGE_CHUNK]
+                split_at = len(chunk)
+
+            chunks.append(chunk)
+            remaining = remaining[split_at:].lstrip()
+
+        return chunks
+
+    async def _send_reply_safely(self, message: discord.Message, reply_text: str):
+        """긴 응답도 분할 전송하여 누락 없이 전달합니다."""
+        parts = self._split_for_discord(reply_text)
+        first = True
+
+        for part in parts:
+            if first:
+                await message.reply(part, mention_author=False)
+                first = False
+            else:
+                await message.channel.send(part)
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
@@ -209,7 +256,18 @@ class Chatbot(commands.Cog):
                 )
                 return
 
-        await message.reply(reply_text, mention_author=False)
+        try:
+            await self._send_reply_safely(message, reply_text)
+        except Exception as e:
+            await self.log(
+                f"챗봇 메시지 전송 실패: {e} "
+                f"[길드: {message.guild.name}({guild_id}), 유저: {message.author}({user_id}), 길이: {len(reply_text)}]"
+            )
+            await message.reply(
+                "응답은 생성했지만 전송 중 문제가 발생했습니다. 질문을 다시 보내주시면 이어서 답변하겠습니다.",
+                mention_author=False,
+            )
+            return
 
         # 응답 저장 (개인/공용)
         await chatbot_db.add_message(guild_id, user_id, "assistant", reply_text)
