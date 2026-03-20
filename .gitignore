@@ -3,6 +3,7 @@
 
 # 데이터 파일 (런타임 생성)
 data/
+config/
 config/birthday_config.json
 
 # Python 캐시
@@ -21,3 +22,4 @@ venv/
 
 # Claude Code 설정
 .claude/
+CLAUDE.md
