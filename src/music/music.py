@@ -74,7 +74,7 @@ class LavalinkVoiceClient(discord.VoiceProtocol):
         if not hasattr(self.client, 'lavalink'):
             self.client.lavalink = lavalink.Client(client.user.id)
             self.client.lavalink.add_node(
-                host='localhost', port=2333, password='sserim',
+                host='localhost', port=2333, password='youshallnotpass',
                 region='us', name='default-node',
             )
         self.lavalink = self.client.lavalink
@@ -398,6 +398,20 @@ class Music(commands.Cog):
     def cog_unload(self):
         self.lavalink._event_hooks.clear()
 
+    # ── 로깅 헬퍼 ──────────────────────────
+
+    async def _log(self, message: str, code: str, color: discord.Color = discord.Color.red()):
+        """Logger cog를 통해 에러 로그를 전송합니다."""
+        print(f'[{code}] {message}')
+        logger = self.bot.get_cog('Logger')
+        if logger:
+            await logger.log(
+                message=f'`[{code}]` {message}',
+                file_name='music.py',
+                title='🎵 뮤직봇 오류',
+                color=color,
+            )
+
     # ── 채널 관리 ───────────────────────────
 
     async def setup_channel(self, guild: discord.Guild, channel: discord.TextChannel):
@@ -441,7 +455,10 @@ class Music(commands.Cog):
             # embed가 삭제된 경우 재생성
             await self.setup_channel(guild, channel)
         except Exception as e:
-            print(f'embed 업데이트 실패 ({guild_id}): {e}')
+            await self._log(
+                f'embed 갱신 실패 (guild={guild_id}): {type(e).__name__}: {e}',
+                code='MUSIC-006',
+            )
 
     async def _restore_embeds(self):
         """봇 재시작 시 설정된 모든 길드의 embed를 복원합니다."""
@@ -452,7 +469,10 @@ class Music(commands.Cog):
             try:
                 await self._update_embed(int(guild_id_str))
             except Exception as e:
-                print(f'embed 복원 실패 ({guild_id_str}): {e}')
+                await self._log(
+                    f'embed 복원 실패 (guild={guild_id_str}): {type(e).__name__}: {e}',
+                    code='MUSIC-007',
+                )
 
     # ── on_message: 텍스트 입력 → 음악 재생 ──
 
@@ -481,45 +501,77 @@ class Music(commands.Cog):
             return
 
         channel = message.channel
+        guild = message.guild
 
-        async def _err(text: str):
-            await channel.send(
-                embed=discord.Embed(description=f'❌ {text}', color=0xff4444),
-                delete_after=6,
-            )
+        async def _err(text: str, code: str):
+            embed = discord.Embed(title='❌ 오류 발생', color=0xff4444)
+            embed.add_field(name='내용', value=text, inline=False)
+            embed.add_field(name='오류 코드', value=f'`{code}`', inline=True)
+            embed.set_footer(text='문제가 지속되면 관리자에게 문의하세요')
+            await channel.send(embed=embed, delete_after=10)
 
         # 음성 채널 확인
         if not message.author.voice or not message.author.voice.channel:
-            return await _err('음성 채널에 먼저 입장해주세요.')
+            return await _err('음성 채널에 먼저 입장해주세요.', 'MUSIC-000')
 
         voice_ch = message.author.voice.channel
-        voice_client = message.guild.voice_client
+        voice_client = guild.voice_client
 
         # 봇 음성 연결
         if voice_client is None:
-            perms = voice_ch.permissions_for(message.guild.me)
+            perms = voice_ch.permissions_for(guild.me)
             if not perms.connect or not perms.speak:
-                return await _err('음성 채널 접속 또는 말하기 권한이 없습니다.')
-            await voice_ch.connect(cls=LavalinkVoiceClient)
+                return await _err('음성 채널 접속 또는 말하기 권한이 없습니다.', 'MUSIC-000')
+            try:
+                await voice_ch.connect(cls=LavalinkVoiceClient)
+            except Exception as e:
+                await _err('음성 채널 연결에 실패했습니다.', 'MUSIC-002')
+                await self._log(
+                    f'음성 채널 연결 실패 (guild={guild.id}, ch={voice_ch.id}): {type(e).__name__}: {e}',
+                    code='MUSIC-002',
+                )
+                return
         elif voice_client.channel.id != voice_ch.id:
-            return await _err('봇이 있는 음성 채널에 입장해주세요.')
+            return await _err('봇이 있는 음성 채널에 입장해주세요.', 'MUSIC-000')
 
-        player = self.bot.lavalink.player_manager.create(message.guild.id)
+        player = self.bot.lavalink.player_manager.create(guild.id)
         player.store('channel', channel_id)
 
         # 새 세션 시작 시 기본 볼륨 30%로 설정
         if not player.is_playing and not player.queue:
             await player.set_volume(30)
 
+        # Lavalink 노드 확인
+        if player.node is None:
+            await _err('음악 서버(Lavalink)에 연결되어 있지 않습니다. 잠시 후 다시 시도해주세요.', 'MUSIC-001')
+            await self._log(
+                f'Lavalink 노드 미연결 (guild={guild.id}): player.node is None',
+                code='MUSIC-001',
+            )
+            return
+
         # 트랙 검색
         search = query if url_rx.match(query) else f'ytsearch:{query}'
         try:
             results = await player.node.get_tracks(search)
         except Exception as e:
-            return await _err(f'검색 중 오류가 발생했습니다: {e}')
+            await _err('트랙 검색 중 오류가 발생했습니다.', 'MUSIC-003')
+            await self._log(
+                f'트랙 검색 실패 (guild={guild.id}, query="{query}"): {type(e).__name__}: {e}',
+                code='MUSIC-003',
+            )
+            return
 
-        if results.load_type in (LoadType.EMPTY, LoadType.ERROR):
-            return await _err('검색 결과가 없습니다. 다른 검색어를 시도해보세요.')
+        if results.load_type == LoadType.ERROR:
+            await _err('트랙을 불러오는 중 오류가 발생했습니다.', 'MUSIC-003')
+            await self._log(
+                f'LoadType.ERROR (guild={guild.id}, query="{query}")',
+                code='MUSIC-003',
+            )
+            return
+
+        if results.load_type == LoadType.EMPTY:
+            return await _err('검색 결과가 없습니다. 다른 검색어를 시도해보세요.', 'MUSIC-000')
 
         was_playing = player.is_playing
 
@@ -535,21 +587,32 @@ class Music(commands.Cog):
             confirm = f'🎵 **{track.title}** 대기열에 추가됨'
 
         if was_playing:
-            # 이미 재생 중이면 확인 메시지 + embed 갱신
             await channel.send(
                 embed=discord.Embed(description=confirm, color=0x1db954),
                 delete_after=5,
             )
-            await self._update_embed(message.guild.id)
+            await self._update_embed(guild.id)
         else:
-            # 새로 재생 시작 → TrackStartEvent가 embed를 갱신
-            await player.play()
+            try:
+                await player.play()
+            except Exception as e:
+                await _err('트랙 재생을 시작하는 데 실패했습니다.', 'MUSIC-004')
+                await self._log(
+                    f'player.play() 실패 (guild={guild.id}): {type(e).__name__}: {e}',
+                    code='MUSIC-004',
+                )
 
     # ── Lavalink 이벤트 ─────────────────────
 
     @lavalink.listener(TrackStartEvent)
     async def on_track_start(self, event: TrackStartEvent):
-        await self._update_embed(event.player.guild_id)
+        try:
+            await self._update_embed(event.player.guild_id)
+        except Exception as e:
+            await self._log(
+                f'TrackStartEvent embed 갱신 실패 (guild={event.player.guild_id}): {type(e).__name__}: {e}',
+                code='MUSIC-006',
+            )
 
     @lavalink.listener(QueueEndEvent)
     async def on_queue_end(self, event: QueueEndEvent):
@@ -562,6 +625,13 @@ class Music(commands.Cog):
     @lavalink.listener(TrackExceptionEvent)
     async def on_track_exception(self, event: TrackExceptionEvent):
         guild_id = event.player.guild_id
+        exception = getattr(event, 'exception', None) or getattr(event, 'error', '알 수 없는 오류')
+
+        await self._log(
+            f'트랙 재생 중 예외 발생 (guild={guild_id}): {exception}',
+            code='MUSIC-005',
+        )
+
         cfg = load_config().get(str(guild_id), {})
         channel_id = cfg.get('channel_id')
         if not channel_id:
@@ -570,14 +640,14 @@ class Music(commands.Cog):
         if not guild:
             return
         channel = guild.get_channel(channel_id)
-        if channel:
-            await channel.send(
-                embed=discord.Embed(
-                    description='❌ 트랙 재생 중 오류가 발생했습니다.',
-                    color=0xff4444,
-                ),
-                delete_after=8,
-            )
+        if not channel:
+            return
+
+        embed = discord.Embed(title='❌ 재생 오류', color=0xff4444)
+        embed.add_field(name='내용', value='트랙 재생 중 오류가 발생하여 해당 곡을 건너뜁니다.', inline=False)
+        embed.add_field(name='오류 코드', value='`MUSIC-005`', inline=True)
+        embed.set_footer(text='문제가 지속되면 관리자에게 문의하세요')
+        await channel.send(embed=embed, delete_after=10)
 
 
 async def setup(bot):
