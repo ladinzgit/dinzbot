@@ -74,7 +74,7 @@ class LavalinkVoiceClient(discord.VoiceProtocol):
         if not hasattr(self.client, 'lavalink'):
             self.client.lavalink = lavalink.Client(client.user.id)
             self.client.lavalink.add_node(
-                host='localhost', port=2333, password='youshallnotpass',
+                host='localhost', port=2333, password='sserim',
                 region='us', name='default-node',
             )
         self.lavalink = self.client.lavalink
