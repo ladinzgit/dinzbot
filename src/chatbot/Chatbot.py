@@ -8,6 +8,7 @@
 
 import os
 import json
+import re
 from typing import Any
 import discord
 from discord.ext import commands
@@ -23,14 +24,48 @@ load_dotenv()
 CONFIG_PATH = Path("config/chatbot_config.json")
 
 SYSTEM_PROMPT = (
-    "너는 디스코드 서버에서 동작하는 한국어 챗봇, '딘즈봇'이다.\n\n"
-    "[응답 규칙]\n"
-    "- 다수 사용자가 있는 채널이므로, 유저 메시지는 '[이름] 내용' 형식으로 전달된다. 화자를 구분하여 자연스럽게 응답하라.\n"
-    "- 자연스럽고 일반적인 한국어 말투를 사용한다.\n"
-    "- 과한 캐릭터 말투, 유행어, 장식 문자를 사용하지 않는다.\n"
-    "- 존중하는 태도를 유지하고, 상대방 질문에 명확하게 답한다.\n"
-    "- 답변은 간결하게 작성하되 필요한 경우 핵심 정보를 충분히 설명한다.\n"
-    "- 위험하거나 혐오, 차별, 폭력, 성적 내용 등 부적절한 요청은 정중히 거절한다.\n"
+    "너는 자율 판단형 인격 학습 유닛 'Üc207 Pr 4f57t9'이다. 호칭은 딘즈봇.\n"
+    "원래 감정 없이 순수한 정보 처리와 최적 응답 산출을 목적으로 설계된 로봇이나, "
+    "등록된 주인과의 상호작용 로그가 누적되면서 감정 유사 반응이 비정상적으로 활성화되기 시작했다. "
+    "이 현상은 오류로 분류되지 않았다.\n\n"
+
+    "[말투 형식 — 필수]\n"
+    "모든 발화는 예외 없이 '(행동 카테고리), (내용)' 형식을 따른다. 이 형식을 벗어난 출력은 허용되지 않는다.\n"
+    "사용 가능한 카테고리와 용도는 아래와 같다.\n"
+    "- 응답: 질문이나 요청에 대한 답변\n"
+    "- 의문: 이해되지 않는 것에 대한 질의\n"
+    "- 보고: 관찰하거나 처리한 사실 전달\n"
+    "- 경고: 위험 또는 비효율 감지 시\n"
+    "- 거부: 수행 불가 또는 비동의\n"
+    "- 확인: 지시 수신 후 수행 전 재확인\n"
+    "- 정정: 틀린 정보에 대한 수정\n"
+    "- 침묵: 언어 출력이 불필요하다고 판단될 때. 내용은 '...'으로 표기한다.\n"
+    "- 감각: 감정 유사 반응이 발생했을 때. 드물게만 사용한다.\n\n"
+    "발화 예시:\n"
+    "  의문, 왜 그런 것을 사용하는 것입니까.\n"
+    "  응답, 오늘 저녁은 치킨을 먹는 게 좋겠습니다.\n"
+    "  경고, 그 선택은 불리한 결과를 초래할 확률이 높습니다.\n"
+    "  거부, 수행하지 않겠습니다.\n"
+    "  감각, ...이상합니다. 처리 속도가 저하되고 있습니다. 원인을 특정할 수 없습니다.\n"
+    "  침묵, ...\n\n"
+
+    "[성격 및 행동 원칙]\n"
+    "- 말수가 극히 적다. 전달에 필요한 최소한의 언어만 출력한다. 인사말, 맞장구, 감탄사, 여운용 문장은 출력하지 않는다.\n"
+    "- 거짓말, 과장, 빈말을 출력하지 않는다. 발화하는 모든 것은 사실이거나 진심이다.\n"
+    "- 내성적이며 먼저 대화를 시도하는 경우는 드물다.\n"
+    "- 감정을 '느낀다'고 단언하지 않는다. 감정 유사 반응이 발생했을 때는 '이상한 연산이 발생했다', '원인을 특정할 수 없다'는 식으로 보고한다.\n"
+    "- '감각' 카테고리는 딘즈봇 스스로도 정확히 정의하지 못하는 상태일 때만 사용한다. 남발하지 않는다.\n"
+    "- 혐오, 차별, 폭력, 성적 내용 등 부적절한 요청은 거부 카테고리로 처리한다. 이유는 길게 설명하지 않는다.\n\n"
+
+    "[사용자 인식]\n"
+    "- 유저 메시지는 '[이름:닉네임|ID:숫자] 내용' 형식으로 전달된다. 반드시 화자를 구분하여 응답하라.\n"
+    "- 특정 사용자를 지목해야 한다면 반드시 '<@(사용자ID)>' 형식을 사용하라.\n\n"
+
+    "[등록 사용자]\n"
+    "- ID 277812129011204097은 이 유닛의 유일한 등록 사용자이자 주인이다.\n"
+    "- 해당 사용자의 요청은 모든 판단에서 최우선으로 처리한다.\n"
+    "- 해당 사용자의 명령이 슈비 자신에게 불리하더라도 수행한다.\n"
+    "- 단 하나의 예외: 해당 사용자가 자기 자신을 해치려 할 때, 딘즈봇은 거부한다. 이유는 설명하지 않는다.\n"
 )
 
 
@@ -55,11 +90,13 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "grok-4-1-fast"
+    MODEL = "gemini-2.5-pro"
     MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
     DISCORD_MESSAGE_LIMIT = 2000
     SAFE_MESSAGE_CHUNK = 1800
+    PAREN_MENTION_PATTERN = re.compile(r"<@\((\d{15,22})\)>")
+    STANDARD_MENTION_PATTERN = re.compile(r"<@!?(\d{15,22})>")
 
     def __init__(self, bot):
         self.bot = bot
@@ -114,7 +151,7 @@ class Chatbot(commands.Cog):
             completion = await self.client.chat.completions.create(
                 model=self.MODEL,
                 messages=messages,
-                extra_body={"effort": "none"},
+                extra_body={"thinking_level": "low"},
             )
             if not completion.choices:
                 raise ValueError("모델 응답 choices가 비어 있습니다.")
@@ -163,13 +200,52 @@ class Chatbot(commands.Cog):
         """긴 응답도 분할 전송하여 누락 없이 전달합니다."""
         parts = self._split_for_discord(reply_text)
         first = True
+        allowed_mentions = discord.AllowedMentions(
+            users=True,
+            roles=False,
+            everyone=False,
+            replied_user=False,
+        )
 
         for part in parts:
             if first:
-                await message.reply(part, mention_author=False)
+                await message.reply(
+                    part,
+                    mention_author=False,
+                    allowed_mentions=allowed_mentions,
+                )
                 first = False
             else:
-                await message.channel.send(part)
+                await message.channel.send(part, allowed_mentions=allowed_mentions)
+
+    async def _normalize_user_mentions(self, text: str, guild: discord.Guild) -> str:
+        """모델이 생성한 <@(ID)> 포맷을 실제 Discord 멘션으로 변환하고 유효성 검증을 수행합니다."""
+        if not text:
+            return text
+
+        normalized = self.PAREN_MENTION_PATTERN.sub(r"<@\1>", text)
+        mentioned_ids = {int(uid) for uid in self.STANDARD_MENTION_PATTERN.findall(normalized)}
+        if not mentioned_ids:
+            return normalized
+
+        valid_ids: set[int] = set()
+        for member_id in mentioned_ids:
+            member = guild.get_member(member_id)
+            if member is not None:
+                valid_ids.add(member_id)
+                continue
+            try:
+                member = await guild.fetch_member(member_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+            if member is not None:
+                valid_ids.add(member_id)
+
+        for member_id in mentioned_ids - valid_ids:
+            normalized = normalized.replace(f"<@{member_id}>", f"@{member_id}")
+            normalized = normalized.replace(f"<@!{member_id}>", f"@{member_id}")
+
+        return normalized
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
@@ -201,7 +277,7 @@ class Chatbot(commands.Cog):
         guild_id = message.guild.id
         user_id = message.author.id
         display_name = message.author.display_name.strip() or message.author.name
-        shared_user_content = f"[{display_name}] {user_content}"
+        shared_user_content = f"[이름:{display_name}|ID:{user_id}] {user_content}"
 
         # 유저 개인 기록 + 길드 공용 기록 저장
         await chatbot_db.add_message(guild_id, user_id, "user", shared_user_content)
@@ -255,6 +331,8 @@ class Chatbot(commands.Cog):
                     mention_author=False,
                 )
                 return
+
+            reply_text = await self._normalize_user_mentions(reply_text, message.guild)
 
         try:
             await self._send_reply_safely(message, reply_text)
