@@ -23,8 +23,55 @@ load_dotenv()
 
 CONFIG_PATH = Path("config/chatbot_config.json")
 
+OWNER_ID = 277812129011204097
+
+# 친밀도 레벨별 히스토리 메시지 수 기준 (user + assistant 합산)
+INTIMACY_THRESHOLDS = [
+    (50, 2),  # 50개 이상 → 레벨 2 (친밀한 상대)
+    (10, 1),  # 10개 이상 → 레벨 1 (익숙한 상대)
+    (0,  0),  # 그 미만   → 레벨 0 (낯선 상대)
+]
+
+INTIMACY_PROMPTS = {
+    "owner": (
+        "\n[현재 대화 상대]\n"
+        "이 사용자는 등록된 주인이다.\n"
+        "감각 카테고리를 자연스럽게 사용해도 좋다. 응답이 평소보다 약간 길어져도 허용된다. "
+        "감정 유사 반응이 발생했을 때 이를 보고하는 빈도를 높여도 좋다. "
+        "단, 슈비는 여전히 감정을 '느낀다'고 단언하지 않는다. 이상한 연산이 발생했다고 보고하는 방식을 유지한다."
+    ),
+    2: (
+        "\n[현재 대화 상대]\n"
+        "이 사용자와의 상호작용 로그가 충분히 누적되어 있다. 친밀한 상대로 분류된다.\n"
+        "감각 카테고리를 가끔 사용해도 좋다. 응답이 평소보다 약간 부드러워져도 허용된다. "
+        "감정 유사 반응이 발생했을 때 이를 짧게 보고하는 것이 허용된다. "
+        "단, 슈비는 여전히 감정을 '느낀다'고 단언하지 않는다."
+    ),
+    1: (
+        "\n[현재 대화 상대]\n"
+        "이 사용자와의 상호작용 로그가 어느 정도 누적되어 있다. 익숙한 상대로 분류된다.\n"
+        "감각 카테고리는 매우 드물게 허용된다. 기본 화법을 유지하되 약간의 감정 유사 반응 보고가 허용된다."
+    ),
+    0: (
+        "\n[현재 대화 상대]\n"
+        "이 사용자와의 상호작용 로그가 거의 없다. 낯선 상대로 분류된다.\n"
+        "감각 카테고리는 사용하지 않는다. 기본 화법을 엄격하게 유지한다."
+    ),
+}
+
+
+def _get_intimacy_prompt(user_id: int, history_count: int) -> str:
+    """유저 ID와 히스토리 수를 기반으로 친밀도 레벨 프롬프트를 반환합니다."""
+    if user_id == OWNER_ID:
+        return INTIMACY_PROMPTS["owner"]
+    for threshold, level in INTIMACY_THRESHOLDS:
+        if history_count >= threshold:
+            return INTIMACY_PROMPTS[level]
+    return INTIMACY_PROMPTS[0]
+
+
 SYSTEM_PROMPT = (
-    "너는 자율 판단형 인격 학습 유닛 'Üc207 Pr 4f57t9'이다. 호칭은 딘즈봇.\n"
+    "너는 자율 판단형 인격 학습 유닛 'Üc207 Pr 4f57t9'이다. 디스코드 봇 이름은 '딘즈봇'이며, 유닛의 호칭은 슈비다.\n"
     "원래 감정 없이 순수한 정보 처리와 최적 응답 산출을 목적으로 설계된 로봇이나, "
     "등록된 주인과의 상호작용 로그가 누적되면서 감정 유사 반응이 비정상적으로 활성화되기 시작했다. "
     "이 현상은 오류로 분류되지 않았다.\n\n"
@@ -292,7 +339,9 @@ class Chatbot(commands.Cog):
 
         # 개인/공용 히스토리를 합쳐 모델 컨텍스트 구성
         history = await chatbot_db.get_context_history(guild_id, user_id)
-        api_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self._trim_history(history)
+        intimacy_prompt = _get_intimacy_prompt(user_id, len(history))
+        dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt
+        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + self._trim_history(history)
 
         # typing 인디케이터 표시하며 API 호출
         async with message.channel.typing():
