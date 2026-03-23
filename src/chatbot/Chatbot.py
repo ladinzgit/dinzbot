@@ -55,7 +55,7 @@ class Chatbot(commands.Cog):
     """AI 챗봇 Cog"""
 
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
-    MODEL = "grok-4"
+    MODEL = "grok-4-1-fast"
     MAX_HISTORY_MESSAGES = 16
     MAX_HISTORY_CHARS = 10000
     DISCORD_MESSAGE_LIMIT = 2000
