@@ -169,3 +169,34 @@ async def clear_history(guild_id, user_id=None):
                 (str(guild_id),),
             )
         await db.commit()
+
+
+async def get_all_user_messages(guild_id, user_id) -> list[dict]:
+    """동기화용: 특정 유저의 모든 user role 메시지를 오래된 순으로 반환합니다."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT role, content, created_at
+               FROM conversations
+               WHERE guild_id = ? AND user_id = ? AND scope = ? AND role = 'user'
+               ORDER BY created_at ASC""",
+            (str(guild_id), str(user_id), SCOPE_USER),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {"role": row["role"], "content": row["content"], "created_at": row["created_at"]}
+                for row in rows
+            ]
+
+
+async def get_all_guild_user_ids(guild_id) -> list[str]:
+    """동기화용: 길드 내 대화 기록이 있는 모든 유저 ID 목록을 반환합니다."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT DISTINCT user_id
+               FROM conversations
+               WHERE guild_id = ? AND scope = ?""",
+            (str(guild_id), SCOPE_USER),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]

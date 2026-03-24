@@ -540,5 +540,107 @@ class Chatbot(commands.Cog):
         )
 
 
+    # ── 동기화 명령어 ─────────────────────────────────────
+
+    async def _sync_user_to_pinecone(self, guild_id: int, user_id: int) -> int:
+        """특정 유저의 SQLite 기록을 Pinecone에 동기화합니다.
+        기존 장기 기억을 삭제 후 신규 저장합니다. 동기화된 메시지 수를 반환합니다."""
+        # 기존 장기 기억 초기화
+        await chatbot_memory.clear_memory(guild_id, user_id)
+        messages = await chatbot_db.get_all_user_messages(guild_id, user_id)
+        count = 0
+        for msg in messages:
+            await chatbot_memory.add_memory(
+                guild_id,
+                user_id,
+                msg["role"],
+                msg["content"],
+            )
+            count += 1
+        return count
+
+    @commands.group(name="기억동기화설정", invoke_without_command=True)
+    @is_guild_admin()
+    async def sync_settings(self, ctx):
+        """관리자 전용 동기화 명령어 안내."""
+        embed = discord.Embed(
+            title="기억 동기화 설정",
+            description="관리자 전용 동기화 명령어 안내입니다.",
+            colour=discord.Colour.from_rgb(151, 214, 181),
+        )
+        embed.add_field(
+            name="명령어",
+            value=(
+                "*기억동기화설정 유저 [@유저] : 특정 유저의 기억을 초기화 후 재동기화합니다.\n"
+                "*기억동기화설정 전체 : 서버 전체 유저의 기억을 초기화 후 재동기화합니다.\n"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.timestamp = ctx.message.created_at
+        await ctx.reply(embed=embed)
+
+    @sync_settings.command(name="유저")
+    @is_guild_admin()
+    async def sync_user_memory(self, ctx, member: discord.Member):
+        """특정 유저의 SQLite 기록을 Pinecone에 동기화합니다."""
+        async with ctx.typing():
+            try:
+                count = await self._sync_user_to_pinecone(ctx.guild.id, member.id)
+            except Exception as e:
+                await self.log(
+                    f"기억 동기화 실패: {e} "
+                    f"[길드: {ctx.guild.name}({ctx.guild.id}), 유저: {member}({member.id})]"
+                )
+                await ctx.reply("동기화 중 오류가 발생했습니다.", mention_author=False)
+                return
+
+        embed = discord.Embed(
+            title="장기 기억 동기화 완료",
+            description=f"{member.mention}의 메시지 **{count}**개를 장기 기억에 동기화했습니다.",
+            colour=discord.Colour.from_rgb(151, 214, 181),
+        )
+        embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.timestamp = ctx.message.created_at
+        await ctx.reply(embed=embed)
+        await self.log(
+            f"{ctx.author}({ctx.author.id})가 {member}({member.id}) 기억 동기화 완료 ({count}개) "
+            f"[길드: {ctx.guild.name}({ctx.guild.id})]"
+        )
+
+    @sync_settings.command(name="전체")
+    @is_guild_admin()
+    async def sync_all_memory(self, ctx):
+        """서버 전체 유저의 SQLite 기록을 Pinecone에 동기화합니다."""
+        async with ctx.typing():
+            try:
+                user_ids = await chatbot_db.get_all_guild_user_ids(ctx.guild.id)
+                total = 0
+                for uid in user_ids:
+                    total += await self._sync_user_to_pinecone(ctx.guild.id, int(uid))
+            except Exception as e:
+                await self.log(
+                    f"전체 기억 동기화 실패: {e} "
+                    f"[길드: {ctx.guild.name}({ctx.guild.id})]"
+                )
+                await ctx.reply("동기화 중 오류가 발생했습니다.", mention_author=False)
+                return
+
+        embed = discord.Embed(
+            title="장기 기억 전체 동기화 완료",
+            description=(
+                f"총 **{len(user_ids)}**명 / **{total}**개의 메시지를 장기 기억에 동기화했습니다."
+            ),
+            colour=discord.Colour.from_rgb(151, 214, 181),
+        )
+        embed.set_footer(text=f"요청자: {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.timestamp = ctx.message.created_at
+        await ctx.reply(embed=embed)
+        await self.log(
+            f"{ctx.author}({ctx.author.id})가 서버 전체 기억 동기화 완료 "
+            f"({len(user_ids)}명, {total}개) [길드: {ctx.guild.name}({ctx.guild.id})]"
+        )
+
+
 async def setup(bot):
     await bot.add_cog(Chatbot(bot))
