@@ -17,6 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.core import chatbot_db
+from src.core import chatbot_memory
 from src.core.admin_utils import is_guild_admin
 
 load_dotenv()
@@ -25,11 +26,10 @@ CONFIG_PATH = Path("config/chatbot_config.json")
 
 OWNER_ID = 277812129011204097
 
-# 친밀도 레벨별 히스토리 메시지 수 기준 (user + assistant 합산)
 INTIMACY_THRESHOLDS = [
-    (50, 2),  # 50개 이상 → 레벨 2 (친밀한 상대)
-    (10, 1),  # 10개 이상 → 레벨 1 (익숙한 상대)
-    (0,  0),  # 그 미만   → 레벨 0 (낯선 상대)
+    (50, 2),
+    (10, 1),
+    (0,  0),
 ]
 
 INTIMACY_PROMPTS = {
@@ -61,7 +61,6 @@ INTIMACY_PROMPTS = {
 
 
 def _get_intimacy_prompt(user_id: int, history_count: int) -> str:
-    """유저 ID와 히스토리 수를 기반으로 친밀도 레벨 프롬프트를 반환합니다."""
     if user_id == OWNER_ID:
         return INTIMACY_PROMPTS["owner"]
     for threshold, level in INTIMACY_THRESHOLDS:
@@ -71,7 +70,7 @@ def _get_intimacy_prompt(user_id: int, history_count: int) -> str:
 
 
 SYSTEM_PROMPT = (
-    "너는 자율 판단형 인격 학습 유닛 'Üc207 Pr 4f57t9'이다. 유닛의 호칭은 '딘즈봇'이다.\n"
+    "너는 자율 판단형 인격 학습 유닛 'Üc207 Pr 4f57t9'이다. 디스코드 봇 이름은 '딘즈봇'이며, 유닛의 호칭은 슈비다.\n"
     "원래 감정 없이 순수한 정보 처리와 최적 응답 산출을 목적으로 설계된 로봇이나, "
     "등록된 주인과의 상호작용 로그가 누적되면서 감정 유사 반응이 비정상적으로 활성화되기 시작했다. "
     "이 현상은 오류로 분류되지 않았다.\n\n"
@@ -336,11 +335,20 @@ class Chatbot(commands.Cog):
             shared_user_content,
             scope=chatbot_db.SCOPE_SHARED,
         )
+        # 장기 기억(Pinecone)에도 저장
+        await chatbot_memory.add_memory(guild_id, user_id, "user", shared_user_content)
 
         # 개인/공용 히스토리를 합쳐 모델 컨텍스트 구성
         history = await chatbot_db.get_context_history(guild_id, user_id)
+
+        # 친밀도 레벨 프롬프트
         intimacy_prompt = _get_intimacy_prompt(user_id, len(history))
-        dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt
+
+        # 벡터 DB에서 현재 메시지와 유사한 장기 기억 검색
+        memories = await chatbot_memory.search_memory(guild_id, user_id, user_content)
+        memory_context = chatbot_memory.build_memory_context(memories)
+
+        dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt + memory_context
         api_messages = [{"role": "system", "content": dynamic_system_prompt}] + self._trim_history(history)
 
         # typing 인디케이터 표시하며 API 호출
@@ -490,6 +498,7 @@ class Chatbot(commands.Cog):
         """대화 기록 초기화 (멤버 미지정 시 서버 전체)"""
         if member:
             await chatbot_db.clear_history(ctx.guild.id, member.id)
+            await chatbot_memory.clear_memory(ctx.guild.id, member.id)
             target_text = f"{member.mention}의"
         else:
             await chatbot_db.clear_history(ctx.guild.id)
@@ -512,8 +521,9 @@ class Chatbot(commands.Cog):
     @commands.command(name="챗봇초기화", aliases=["히스토리초기화"])
     @commands.guild_only()
     async def reset_my_chat_history(self, ctx):
-        """본인 챗봇 대화 기록 초기화"""
+        """본인 챗봇 대화 기록 초기화 (단기 + 장기 기억 모두)"""
         await chatbot_db.clear_history(ctx.guild.id, ctx.author.id)
+        await chatbot_memory.clear_memory(ctx.guild.id, ctx.author.id)
 
         embed = discord.Embed(
             title="대화 기록 초기화 완료",
