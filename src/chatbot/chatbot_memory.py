@@ -13,6 +13,7 @@
 """
 
 import os
+import math
 import hashlib
 from datetime import datetime, timezone
 
@@ -28,7 +29,8 @@ PINECONE_REGION = "us-east-1"          # 리전 (Pinecone 무료 플랜 기준)
 EMBEDDING_MODEL = "multilingual-e5-large"  # Pinecone 자체 다국어 임베딩 모델
 EMBEDDING_DIM = 1024                    # multilingual-e5-large 출력 차원
 MAX_MEMORY_RESULTS = 3                  # 검색 시 가져올 최대 기억 수
-MIN_RELEVANCE_SCORE = 0.75             # 이 유사도 이하는 무시 (0~1)
+MIN_RELEVANCE_SCORE = 0.75             # 이 유사도 이하는 무시 (0~1, 감쇠 적용 후 기준)
+DECAY_LAMBDA = 0.05                    # 시간 감쇠 계수 (반감기 약 14일)
 
 _pinecone_client: Pinecone | None = None
 _pinecone_index = None
@@ -173,15 +175,29 @@ async def search_memory(
             include_metadata=True,
         )
 
-        memories = []
+        now = datetime.now(timezone.utc)
+        scored = []
         for match in results.get("matches", []):
-            score = match.get("score", 0.0)
-            if score >= MIN_RELEVANCE_SCORE:
-                content = match.get("metadata", {}).get("content", "")
-                if content:
-                    memories.append(content)
+            raw_score = match.get("score", 0.0)
+            metadata = match.get("metadata", {})
 
-        return memories
+            # 시간 감쇠 적용: 유효 점수 = 유사도 × e^(-λ × 경과일수)
+            created_at_str = metadata.get("created_at", "")
+            try:
+                created_at = datetime.fromisoformat(created_at_str)
+                days_elapsed = (now - created_at).total_seconds() / 86400
+            except (ValueError, TypeError):
+                days_elapsed = 0.0
+            decayed_score = raw_score * math.exp(-DECAY_LAMBDA * days_elapsed)
+
+            if decayed_score >= MIN_RELEVANCE_SCORE:
+                mem_content = metadata.get("content", "")
+                if mem_content:
+                    scored.append((decayed_score, mem_content))
+
+        # 유효 점수 내림차순 정렬 후 내용만 반환
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [mem for _, mem in scored]
 
     except Exception as e:
         print(f"[chatbot_memory] search_memory 실패: {e}")
