@@ -156,6 +156,111 @@ class FortuneCommand(commands.Cog):
                 break
         return found
 
+    def _extract_forbidden_openers(self, recent_texts: list[str], max_items: int = 24) -> list[str]:
+        """최근 운세에서 문장 시작어(첫 어절)를 추출해 재사용을 금지합니다."""
+        if not recent_texts:
+            return []
+
+        openers: list[str] = []
+        seen = set()
+
+        for text in recent_texts:
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("**행운의 상징:**"):
+                    continue
+                if "- (" in line:
+                    continue
+
+                first_word = re.split(r"\s+", line)[0]
+                cleaned = re.sub(r"^[\-*•]+", "", first_word).strip()
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                openers.append(cleaned)
+                if len(openers) >= max_items:
+                    return openers
+
+        return openers
+
+    def _extract_forbidden_scene_seeds(self, recent_texts: list[str], max_items: int = 16) -> list[str]:
+        """최근 운세 본문의 장면/소재 시드를 추출해 반복을 억제합니다."""
+        if not recent_texts:
+            return []
+
+        seeds: list[str] = []
+        seen = set()
+
+        for text in recent_texts:
+            sections = re.split(r"\n\s*\n", text)
+            for section in sections:
+                s = section.strip()
+                if not s:
+                    continue
+                if s.startswith("**요약:**") or s.startswith("**행운의 상징:**"):
+                    continue
+
+                sentence = re.split(r"[.!?\n]", s)[0].strip()
+                sentence = re.sub(r"\s+", " ", sentence)
+                if len(sentence) < 8:
+                    continue
+
+                seed = sentence[:42]
+                if seed in seen:
+                    continue
+
+                seen.add(seed)
+                seeds.append(seed)
+                if len(seeds) >= max_items:
+                    return seeds
+
+        return seeds
+
+    def _extract_forbidden_lucky_symbols(self, recent_texts: list[str], max_items: int = 24) -> list[str]:
+        """최근 운세의 행운의 상징 키워드를 추출해 재사용을 금지합니다."""
+        if not recent_texts:
+            return []
+
+        symbols: list[str] = []
+        seen = set()
+
+        for text in recent_texts:
+            for category, keyword in re.findall(r"([^,\n]+?)-\(([^\)]+)\)", text):
+                c = re.sub(r"\s+", " ", category).strip()
+                k = re.sub(r"\s+", " ", keyword).strip()
+                if not c or not k:
+                    continue
+
+                pair = f"{c}-{k}"
+                key = pair.lower()
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                symbols.append(pair)
+                if len(symbols) >= max_items:
+                    return symbols
+
+        return symbols
+
+    def _build_recent_fortune_context(self, recent_texts: list[str], max_chars_per_item: int = 1400) -> str:
+        """최근 7일 운세 원문을 프롬프트에 전달하기 위한 텍스트를 구성합니다."""
+        if not recent_texts:
+            return "- 최근 7일 기록 없음"
+
+        blocks = []
+        for idx, text in enumerate(recent_texts, start=1):
+            normalized = re.sub(r"\s+", " ", text).strip()
+            clipped = normalized[:max_chars_per_item]
+            blocks.append(f"[{idx}] {clipped}")
+        return "\n".join(blocks)
+
     @commands.command(aliases=["운세", "ㅇㅅ"])
     @only_in_guild()
     async def tell_fortune(self, ctx):
@@ -239,7 +344,15 @@ class FortuneCommand(commands.Cog):
 
         recent_texts = fortune_db.get_recent_fortune_texts(ctx.guild.id, ctx.author.id, days=7)
         avoid_phrases = self._extract_avoid_phrases(recent_texts)
+        forbidden_openers = self._extract_forbidden_openers(recent_texts)
+        forbidden_scene_seeds = self._extract_forbidden_scene_seeds(recent_texts)
+        forbidden_lucky_symbols = self._extract_forbidden_lucky_symbols(recent_texts)
+        recent_archive_text = self._build_recent_fortune_context(recent_texts)
+
         avoid_phrases_text = "\n".join([f"- {p}" for p in avoid_phrases]) if avoid_phrases else "- 없음"
+        forbidden_openers_text = "\n".join([f"- {p}" for p in forbidden_openers]) if forbidden_openers else "- 없음"
+        forbidden_scene_seeds_text = "\n".join([f"- {p}" for p in forbidden_scene_seeds]) if forbidden_scene_seeds else "- 없음"
+        forbidden_lucky_symbols_text = "\n".join([f"- {p}" for p in forbidden_lucky_symbols]) if forbidden_lucky_symbols else "- 없음"
 
         prompt = (
             f"{birth_text} {today_text} 오늘의 운세를 알려줘.\n"
@@ -251,8 +364,16 @@ class FortuneCommand(commands.Cog):
             f"- 오늘 실수 트리거: {birth_profile['mistake_trigger']}\n"
             f"- 행운 루틴 키워드: {birth_profile['luck_anchor']}\n"
             f"- 라이프패스 숫자: {life_path_text}\n\n"
+            "최근 7일 운세 원문 아카이브(본문 + 요약 + 행운의 상징):\n"
+            f"{recent_archive_text}\n\n"
             "최근 7일 운세에서 반복 회피할 표현 목록:\n"
-            f"{avoid_phrases_text}"
+            f"{avoid_phrases_text}\n\n"
+            "최근 7일 대비 금지할 본문 첫 시작어 목록(절대 재사용 금지):\n"
+            f"{forbidden_openers_text}\n\n"
+            "최근 7일 대비 금지할 본문 소재 시드 목록(절대 재사용 금지):\n"
+            f"{forbidden_scene_seeds_text}\n\n"
+            "최근 7일 대비 금지할 행운의 상징 목록(절대 재사용 금지):\n"
+            f"{forbidden_lucky_symbols_text}"
         )
         variant_instruction = self._get_prompt_variant(ctx.author.id, today)
         waiting_message = None
@@ -261,7 +382,7 @@ class FortuneCommand(commands.Cog):
             waiting_message = await ctx.reply("운세를 불러오는 중입니다. 잠시만 기다려 주세요.", mention_author=False)
 
             completion = await self.client.chat.completions.create(
-                model="gpt-5.4",
+                model="gpt-5.4-mini",
                 messages=[
                     {
                         "role": "system",
@@ -296,11 +417,15 @@ class FortuneCommand(commands.Cog):
 
                             "【다양성 강화 규칙 - 매우 중요】\n"
                             f"- {variant_instruction}\n"
+                            "- 사용자 프롬프트에 제공된 최근 7일 원문을 반드시 참조해, 본문 소재와 행운의 상징을 엄격히 비중복으로 작성해\n"
                             "- 같은 표현, 문장 구조, 시작 방식 반복을 금지해\n"
                             "- '좋은 기운', '무난한 하루', '작은 행운' 같은 상투 표현은 쓰지 마\n"
                             "- 사용자 프롬프트에 제공된 '반복 회피 표현 목록'과 동일/유사한 문장을 다시 쓰지 마\n"
+                            "- 사용자 프롬프트의 '금지할 본문 소재 시드 목록'과 의미가 겹치는 상황/장면을 재사용하지 마\n"
+                            "- 사용자 프롬프트의 '금지할 행운의 상징 목록'에 있는 항목-키워드 조합 및 유사 키워드를 재사용하지 마\n"
                             "- 특히 문단 첫 문장과 요약 문장은 과거 7일과 겹치지 않게 새롭게 작성해\n"
                             "- 문단 시작 방식은 매번 다르게 구성해 (상황 제시 / 감각 묘사 / 행동 제안 등)\n"
+                            "- 본문 각 문단의 첫 문장 시작어는 서로 달라야 하며, 금지 시작어 목록과도 절대 겹치면 안 돼\n"
                             "- 비유를 쓰더라도 뻔한 비유(cliche)는 피해\n\n"
 
                             "【출력 형식 - 반드시 준수】\n"
@@ -316,7 +441,7 @@ class FortuneCommand(commands.Cog):
 
                             "(빈 줄)\n\n"
 
-                            "**요약:** 한 문장으로 핵심 정리 (자연스럽게)묘.\n\n"
+                            "**요약:** 한 문장으로 핵심 정리 (자연스럽게).\n\n"
 
                             "**행운의 상징:**\n"
                             "- 아래 항목 중 6개 선택\n"
@@ -344,12 +469,7 @@ class FortuneCommand(commands.Cog):
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.85,
-                top_p=0.9,
-                presence_penalty=0.6,
-                frequency_penalty=0.4,
-                reasoning_effort="low",
-                max_completion_tokens=1500,
+                temperature=1
             )
             fortune_text = completion.choices[0].message.content.strip()
             today_str = today.strftime("%Y-%m-%d")
