@@ -6,6 +6,7 @@
 - *챗봇설정 기록초기화 [@유저] : 대화 기록 초기화
 """
 
+import asyncio
 import os
 import json
 import re
@@ -153,6 +154,8 @@ class Chatbot(commands.Cog):
             if self.api_key
             else None
         )
+        # 채널별 배치 대기 상태: {channel_id: {"messages": [...], "task": Task}}
+        self._pending_batches: dict[int, dict] = {}
 
     async def cog_load(self):
         await chatbot_db.init_db()
@@ -296,6 +299,8 @@ class Chatbot(commands.Cog):
 
     # ── 메시지 이벤트 ─────────────────────────────────────
 
+    BATCH_DELAY = 3.0  # 초: 이 시간 내 추가 메시지가 오면 배치로 묶어 처리
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         # 봇 메시지 / DM / 명령어 무시
@@ -310,7 +315,34 @@ class Chatbot(commands.Cog):
         if not channel_id or message.channel.id != channel_id:
             return
 
-        await self._respond(message)
+        ch_id = message.channel.id
+        batch = self._pending_batches.get(ch_id)
+
+        if batch:
+            # 기존 대기 task 취소 후 메시지 추가
+            batch["task"].cancel()
+            batch["messages"].append(message)
+        else:
+            self._pending_batches[ch_id] = {"messages": [message], "task": None}
+
+        task = asyncio.create_task(self._delayed_respond(ch_id))
+        self._pending_batches[ch_id]["task"] = task
+
+    async def _delayed_respond(self, channel_id: int):
+        """BATCH_DELAY초 대기 후 배치 내 메시지를 처리합니다. 취소되면 아무것도 하지 않습니다."""
+        try:
+            await asyncio.sleep(self.BATCH_DELAY)
+        except asyncio.CancelledError:
+            return
+
+        batch = self._pending_batches.pop(channel_id, None)
+        if not batch or not batch["messages"]:
+            return
+
+        try:
+            await self._respond_batch(batch["messages"])
+        except Exception as e:
+            await self.log(f"챗봇 배치 처리 오류: {e}")
 
     async def _respond(self, message: discord.Message):
         """대화 기록을 포함해 응답을 생성하고 전송합니다."""
@@ -413,6 +445,107 @@ class Chatbot(commands.Cog):
             "assistant",
             reply_text,
             scope=chatbot_db.SCOPE_SHARED,
+        )
+
+    async def _respond_batch(self, messages: list[discord.Message]):
+        """메시지 배치를 하나의 응답으로 처리합니다. 단일 메시지면 _respond에 위임합니다."""
+        if not messages:
+            return
+        if len(messages) == 1:
+            await self._respond(messages[0])
+            return
+
+        if not self.client:
+            return
+
+        guild_id = messages[0].guild.id
+
+        # 모든 메시지를 DB/Pinecone에 저장
+        for msg in messages:
+            user_content = msg.content.strip()
+            if not user_content:
+                continue
+            uid = msg.author.id
+            display_name = msg.author.display_name.strip() or msg.author.name
+            shared_content = f"[이름:{display_name}|ID:{uid}] {user_content}"
+            await chatbot_db.add_message(guild_id, uid, "user", shared_content)
+            await chatbot_db.add_message(
+                guild_id, uid, "user", shared_content, scope=chatbot_db.SCOPE_SHARED
+            )
+            await chatbot_memory.add_memory(guild_id, uid, "user", shared_content)
+
+        # 마지막 메시지 유저 기준으로 컨텍스트 구성 (shared context에 모든 메시지 포함됨)
+        last_msg = messages[-1]
+        last_user_id = last_msg.author.id
+        last_user_content = last_msg.content.strip()
+
+        history = await chatbot_db.get_context_history(guild_id, last_user_id)
+        intimacy_prompt = _get_intimacy_prompt(last_user_id, len(history))
+        memories = await chatbot_memory.search_memory(guild_id, last_user_id, last_user_content)
+        memory_context = chatbot_memory.build_memory_context(memories)
+
+        dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt + memory_context
+        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + self._trim_history(history)
+
+        async with last_msg.channel.typing():
+            reply_text = None
+            last_error = None
+
+            try:
+                reply_text = await self._create_model_text(messages=api_messages)
+            except Exception as e:
+                last_error = e
+
+            if not reply_text:
+                combined_content = "\n".join(
+                    f"[{m.author.display_name}] {m.content.strip()}"
+                    for m in messages
+                    if m.content.strip()
+                )
+                minimal_messages = [
+                    {
+                        "role": "system",
+                        "content": "질문에 대해 반드시 답변하세요. 답변은 핵심 위주로 3~6문장 이내로 작성하세요.",
+                    },
+                    {"role": "user", "content": combined_content[:1200]},
+                ]
+                try:
+                    reply_text = await self._create_model_text(messages=minimal_messages)
+                except Exception as e:
+                    last_error = e
+
+            if not reply_text:
+                senders = ", ".join(str(m.author) for m in messages)
+                await self.log(
+                    f"챗봇 배치 응답 생성 실패(모든 재시도 실패): {last_error} "
+                    f"[길드: {last_msg.guild.name}({guild_id}), 유저들: {senders}]"
+                )
+                await last_msg.reply(
+                    "지금은 상세 생성에 실패했지만, 핵심만 먼저 답변하면 해당 주제는 단계별로 나눠 설명하면 해결할 수 있습니다. 질문을 한 문단씩 나눠 보내주시면 바로 이어서 답변하겠습니다.",
+                    mention_author=False,
+                )
+                return
+
+            reply_text = await self._normalize_user_mentions(reply_text, last_msg.guild)
+
+        try:
+            await self._send_reply_safely(last_msg, reply_text)
+        except Exception as e:
+            await self.log(
+                f"챗봇 배치 메시지 전송 실패: {e} "
+                f"[길드: {last_msg.guild.name}({guild_id}), 길이: {len(reply_text)}]"
+            )
+            await last_msg.reply(
+                "응답은 생성했지만 전송 중 문제가 발생했습니다. 질문을 다시 보내주시면 이어서 답변하겠습니다.",
+                mention_author=False,
+            )
+            return
+
+        # 응답 저장: 각 유저 개인 기록에 저장, 공용 기록에는 한 번만 저장
+        for msg in messages:
+            await chatbot_db.add_message(guild_id, msg.author.id, "assistant", reply_text)
+        await chatbot_db.add_message(
+            guild_id, last_user_id, "assistant", reply_text, scope=chatbot_db.SCOPE_SHARED
         )
 
     # ── 설정 명령어 ───────────────────────────────────────

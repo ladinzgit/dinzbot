@@ -358,7 +358,7 @@ class FortuneCommand(commands.Cog):
             f"{birth_text} {today_text} 오늘의 운세를 알려줘.\n"
             "아래 개인화 입력을 반드시 반영해.\n"
             f"- 별자리: {birth_profile['zodiac']}\n"
-            f"- 월별 핵심 성향: {birth_profile['month_key']}\n"
+            f"- 월별 핵심 성향: {birth_profile['month_key']}\n" 
             f"- 별자리 핵심 성향: {birth_profile['zodiac_key']}\n"
             f"- 관계 소통 스타일: {birth_profile['relation_style']}\n"
             f"- 오늘 실수 트리거: {birth_profile['mistake_trigger']}\n"
