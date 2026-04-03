@@ -6,16 +6,21 @@
 import discord
 from discord.ext import commands, tasks
 from src.core import birthday_db
-from src.core import fortune_db
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import pytz
 import aiohttp
+import os
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from src.core.admin_utils import GUILD_IDS, only_in_guild, is_guild_admin
+from src.chatbot.Chatbot import SYSTEM_PROMPT, Chatbot as ChatbotCog
 
 CONFIG_PATH = Path("config/birthday_config.json")
 KST = pytz.timezone("Asia/Seoul")
+
+load_dotenv()
 
 
 def load_config() -> dict:
@@ -41,6 +46,12 @@ class BirthdayInterface(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self.api_key = os.environ.get("FACTCHAT_API_KEY")
+        self.client = (
+            AsyncOpenAI(api_key=self.api_key, base_url=ChatbotCog.BASE_URL)
+            if self.api_key
+            else None
+        )
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -241,6 +252,70 @@ class BirthdayInterface(commands.Cog):
             return "AKMU - 어떻게 이별까지 사랑하겠어, 널 사랑하는 거지"
         return "Mariah Carey - All I Want for Christmas Is You"
 
+    async def generate_birthday_letter(
+        self,
+        guild: discord.Guild,
+        birthday_members: list[discord.Member],
+        weather_line: str,
+        caution_line: str,
+        song: str,
+    ) -> str:
+        """챗봇 페르소나/모델로 생일 축하 본문을 생성"""
+        member_names = ", ".join(member.display_name for member in birthday_members)
+        today = datetime.now(KST)
+
+        user_prompt = (
+            "[작업]\n"
+            "오늘 생일인 유저들을 위한 디스코드 축하 메시지 본문을 작성해.\n"
+            "메시지는 자연스럽고 따뜻하게 작성하되, 캐릭터 말투 규칙은 시스템 프롬프트를 따르세요.\n\n"
+            "[출력 규칙]\n"
+            "- 본문만 출력하고 불필요한 설명/머리말/코드블록은 금지\n"
+            "- 8~14문장으로 작성\n"
+            "- @everyone, 멘션 태그(<@...>)를 직접 출력하지 말 것\n"
+            "- 날씨 정보/주의 문구/추천곡을 자연스럽게 녹여 넣을 것\n"
+            "- 마지막 문장은 생일 축하 마무리로 끝낼 것\n\n"
+            "[상황 정보]\n"
+            f"- 길드명: {guild.name}\n"
+            f"- 오늘 날짜: {today.year}년 {today.month}월 {today.day}일\n"
+            f"- 생일 대상 표시명: {member_names}\n"
+            f"- 날씨 요약: {weather_line}\n"
+            f"- 건강 주의 문구: {caution_line}\n"
+            f"- 계절 추천곡: {song}\n"
+        )
+
+        fallback = (
+            f"오늘은 {today.year}년 {today.month}월 {today.day}일이야. "
+            f"{member_names} 생일 진심으로 축하해. "
+            "새로운 한 해를 시작하는 오늘이 기분 좋은 하루가 되었으면 좋겠어. "
+            f"{weather_line} {caution_line} "
+            f"오늘 추천곡은 {song}이야. "
+            "좋은 사람들과 즐겁게 보내고, 앞으로의 한 해도 건강하고 안전하게 잘 보내길 바랄게."
+        )
+
+        if not self.client:
+            return fallback
+
+        try:
+            completion = await self.client.chat.completions.create(
+                model=ChatbotCog.MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                extra_body={"thinking_level": "low"},
+            )
+            if completion.choices:
+                content = completion.choices[0].message.content
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+        except Exception as e:
+            await self.log(
+                f"생일 축하문 LLM 생성 실패: {e} "
+                f"[길드: {guild.name}({guild.id}), 대상: {', '.join(str(m.id) for m in birthday_members)}]"
+            )
+
+        return fallback
+
     async def send_birthday_congratulation(self, guild: discord.Guild, force: bool = False):
         """오늘 생일인 유저에게 장문 축하 메시지를 전송"""
         birthday_members = await self.get_today_birthdays(guild)
@@ -270,30 +345,18 @@ class BirthdayInterface(commands.Cog):
         weather_line, caution_line = await self.get_weather_summary()
         song = self.get_season_song()
         member_mentions = " ".join(member.mention for member in birthday_members)
-        now = datetime.now(KST)
-
-        lines = [
-            f"@everyone {member_mentions}",
-            f"오늘은 {now.year}년 {now.month}월 {now.day}일입니다.",
-            f"생일을 맞이한 {member_mentions}님, 진심으로 축하드립니다.",
-            "새로운 한 해를 시작하는 오늘이 의미 있는 하루가 되길 바랍니다.",
-            "지금까지 쌓아 온 노력과 경험이 앞으로 더 큰 힘이 되기를 응원합니다.",
-            "오늘만큼은 하고 싶은 일과 좋아하는 일을 충분히 즐기세요.",
-            "주변의 따뜻한 마음과 축하를 마음껏 받는 하루가 되었으면 좋겠습니다.",
-            "작은 계획 하나도 좋은 결과로 이어지는 즐거운 날이 되길 바랍니다.",
-            weather_line,
-            caution_line,
-            "식사와 휴식도 꼭 챙기면서 몸 상태를 편안하게 유지하세요.",
-            "오늘의 기분 좋은 순간이 오래 기억에 남는 소중한 추억이 되길 바랍니다.",
-            f"계절 추천곡: {song}",
-            "추천곡과 함께 여유롭게 하루를 마무리해 보세요.",
-            "앞으로의 한 해도 건강하고 안전하게, 원하는 목표를 이루시길 바랍니다.",
-            "다시 한번 생일을 진심으로 축하드립니다.",
-        ]
+        letter_body = await self.generate_birthday_letter(
+            guild=guild,
+            birthday_members=birthday_members,
+            weather_line=weather_line,
+            caution_line=caution_line,
+            song=song,
+        )
+        message_content = f"@everyone {member_mentions}\n{letter_body}".strip()
 
         try:
             await channel.send(
-                "\n".join(lines),
+                message_content,
                 allowed_mentions=discord.AllowedMentions(everyone=True, users=True, roles=False),
             )
             self.set_last_congrats_date(guild.id, today_str)
