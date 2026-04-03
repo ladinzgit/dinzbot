@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── 설정 상수 ────────────────────────────────────────────
-PINECONE_INDEX_NAME = "dinzbot-memory"  # Pinecone 인덱스 이름 (최초 1회 자동 생성)
+PINECONE_INDEX_NAME = "haruka-memory"   # Pinecone 인덱스 이름 (최초 1회 자동 생성)
 PINECONE_CLOUD = "aws"                  # 클라우드 프로바이더
 PINECONE_REGION = "us-east-1"          # 리전 (Pinecone 무료 플랜 기준)
 EMBEDDING_MODEL = "multilingual-e5-large"  # Pinecone 자체 다국어 임베딩 모델
