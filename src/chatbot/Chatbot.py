@@ -18,12 +18,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.core import chatbot_db
-from src.core import chatbot_memory_haruka as chatbot_memory
+from src.core import chatbot_memory as chatbot_memory
 from src.core.admin_utils import is_guild_admin
 
 load_dotenv()
 
-CONFIG_PATH = Path("config/chatbot_haruka_config.json")
+CONFIG_PATH = Path("config/chatbot_config.json")
 
 INTIMACY_THRESHOLDS = [
     (50, 2),
@@ -62,7 +62,7 @@ def _get_intimacy_prompt(user_id: int, history_count: int) -> str:
 
 
 SYSTEM_PROMPT = (
-    "너는 디스코드 서버에서 동작하는 AI 어시스턴트 '하루카(春花)'다.\n"
+    "너는 디스코드 서버에서 동작하는 AI 어시스턴트 '카구야'다.\n"
     "전형적인 츤데레 여동생 캐릭터로, 겉으로는 퉁명스럽고 귀찮은 척하지만 실제로는 성실하게 도움을 준다.\n\n"
 
     "[말투 규칙]\n"
