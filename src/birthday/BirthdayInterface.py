@@ -6,11 +6,11 @@
 import discord
 from discord.ext import commands, tasks
 from src.core import birthday_db
+from src.core import chatbot_db
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import pytz
-import aiohttp
 import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -191,78 +191,25 @@ class BirthdayInterface(commands.Cog):
 
         return members
 
-    async def get_weather_summary(self) -> tuple[str, str]:
-        """서울 기준 오늘 날씨 요약과 주의 문구를 반환"""
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-            "?latitude=37.5665&longitude=126.9780"
-            "&current=temperature_2m&timezone=Asia%2FSeoul"
-        )
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        temp = data.get("current", {}).get("temperature_2m")
-                        if temp is not None:
-                            if temp >= 28:
-                                return (
-                                    f"오늘 기온은 약 {temp:.1f}도 정도로 더운 편입니다.",
-                                    "더위에 지치지 않도록 수분 섭취를 자주 하고, 야외 활동 시 더위 조심하세요.",
-                                )
-                            if temp <= 5:
-                                return (
-                                    f"오늘 기온은 약 {temp:.1f}도 정도로 추운 편입니다.",
-                                    "체온이 떨어지지 않게 따뜻하게 입고, 감기 조심하세요.",
-                                )
-                            return (
-                                f"오늘 기온은 약 {temp:.1f}도로 무난한 편입니다.",
-                                "일교차가 있을 수 있으니 겉옷을 챙겨 컨디션 관리하세요.",
-                            )
-        except Exception:
-            pass
-
-        # 날씨 API 실패 시 계절 기반 안내
-        month = datetime.now(KST).month
-        if month in (6, 7, 8):
-            return (
-                "오늘은 여름 날씨로 체감이 더울 수 있습니다.",
-                "수분 섭취를 자주 하고, 외출 시 더위 조심하세요.",
-            )
-        if month in (12, 1, 2):
-            return (
-                "오늘은 겨울 날씨로 기온이 낮을 수 있습니다.",
-                "보온에 신경 쓰고 감기 조심하세요.",
-            )
-        return (
-            "오늘은 계절 특성상 기온 변화가 있을 수 있습니다.",
-            "아침저녁 기온 차이를 고려해 건강 관리에 유의하세요.",
-        )
-
-    def get_season_song(self) -> str:
-        """현재 계절에 어울리는 추천곡 반환"""
-        month = datetime.now(KST).month
-        if month in (3, 4, 5):
-            return "Busker Busker - 벚꽃 엔딩"
-        if month in (6, 7, 8):
-            return "Dua Lipa - Levitating"
-        if month in (9, 10, 11):
-            return "AKMU - 어떻게 이별까지 사랑하겠어, 널 사랑하는 거지"
-        return "Mariah Carey - All I Want for Christmas Is You"
-
     async def generate_birthday_letter(
         self,
         guild: discord.Guild,
         birthday_members: list[discord.Member],
-        weather_line: str,
-        caution_line: str,
-        song: str,
     ) -> str:
         """챗봇 페르소나/모델로 생일 축하 본문을 생성"""
         member_names = ", ".join(member.display_name for member in birthday_members)
         today = datetime.now(KST)
+
+        users_context = []
+        for member in birthday_members:
+            history = await chatbot_db.get_context_history(guild.id, member.id)
+            if history:
+                # 최근 메시지만 추출해서 정보 제공 (최대 5개)
+                recent_msgs = [h["content"] for h in history if h["role"] == "user"][-5:]
+                if recent_msgs:
+                    users_context.append(f"- {member.display_name}의 최근 대화:\n  " + "\n  ".join(recent_msgs))
+        
+        context_str = "\n".join(users_context) if users_context else "- 최근 대화 기록 없음"
 
         user_prompt = (
             "[작업]\n"
@@ -272,23 +219,22 @@ class BirthdayInterface(commands.Cog):
             "- 본문만 출력하고 불필요한 설명/머리말/코드블록은 금지\n"
             "- 8~14문장으로 작성\n"
             "- @everyone, 멘션 태그(<@...>)를 직접 출력하지 말 것\n"
-            "- 날씨 정보/주의 문구/추천곡을 자연스럽게 녹여 넣을 것\n"
+            "- 오늘 날짜를 기반으로 어울리는 노래를 한 곡 '직접' 추천하고, 추천 이유도 자연스럽게 포함할 것\n"
             "- 마지막 문장은 생일 축하 마무리로 끝낼 것\n\n"
             "[상황 정보]\n"
             f"- 길드명: {guild.name}\n"
             f"- 오늘 날짜: {today.year}년 {today.month}월 {today.day}일\n"
-            f"- 생일 대상 표시명: {member_names}\n"
-            f"- 날씨 요약: {weather_line}\n"
-            f"- 건강 주의 문구: {caution_line}\n"
-            f"- 계절 추천곡: {song}\n"
+            f"- 생일 대상 표시명: {member_names}\n\n"
+            "[유저 대화 기록]\n"
+            "아래는 생일 대상자들의 최근 챗봇 대화 내용이야. 이를 참고해서 친근하고 개인화된 메시지를 작성해줘.\n"
+            f"{context_str}\n"
         )
 
         fallback = (
             f"오늘은 {today.year}년 {today.month}월 {today.day}일이야. "
             f"{member_names} 생일 진심으로 축하해. "
             "새로운 한 해를 시작하는 오늘이 기분 좋은 하루가 되었으면 좋겠어. "
-            f"{weather_line} {caution_line} "
-            f"오늘 추천곡은 {song}이야. "
+            "오늘 하루는 네가 좋아하는 노래를 들으며 즐겁게 보내길 바랄게. "
             "좋은 사람들과 즐겁게 보내고, 앞으로의 한 해도 건강하고 안전하게 잘 보내길 바랄게."
         )
 
@@ -342,15 +288,10 @@ class BirthdayInterface(commands.Cog):
             )
             return
 
-        weather_line, caution_line = await self.get_weather_summary()
-        song = self.get_season_song()
         member_mentions = " ".join(member.mention for member in birthday_members)
         letter_body = await self.generate_birthday_letter(
             guild=guild,
             birthday_members=birthday_members,
-            weather_line=weather_line,
-            caution_line=caution_line,
-            song=song,
         )
         message_content = f"@everyone {member_mentions}\n{letter_body}".strip()
 
