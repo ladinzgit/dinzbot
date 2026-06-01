@@ -10,6 +10,12 @@ import asyncio
 import os
 import json
 import re
+import base64
+import mimetypes
+import aiohttp
+import emoji
+from PIL import Image, ImageDraw, ImageFont
+import io
 from typing import Any
 import discord
 from discord.ext import commands
@@ -123,6 +129,115 @@ class Chatbot(commands.Cog):
         )
         # 채널별 배치 대기 상태: {channel_id: {"messages": [...], "task": Task}}
         self._pending_batches: dict[int, dict] = {}
+
+    def _get_twemoji_filename(self, emoji_str: str) -> str:
+        """이모지 문자열을 Twemoji CDN에 맞는 하이픈 연결 hex 파일명으로 변환합니다."""
+        codepoints = []
+        for char in emoji_str:
+            cp = ord(char)
+            # variation selector-16 (U+FE0F)은 일반적으로 Twemoji 파일명에서 제외됩니다.
+            if cp == 0xFE0F:
+                continue
+            codepoints.append(f"{cp:x}")
+        return "-".join(codepoints)
+
+    async def _download_image(self, url: str) -> bytes | None:
+        """비동기적으로 외부 URL에서 이미지 바이트를 다운로드합니다."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        return await response.read()
+        except Exception:
+            pass
+        return None
+
+    def _render_emoji_locally(self, emoji_char: str) -> bytes | None:
+        """네트워크 다운로드 실패 시 Windows Segoe UI Emoji 폰트를 사용하여 로컬에서 이모지 이미지를 생성합니다."""
+        try:
+            size = (128, 128)
+            image = Image.new("RGBA", size, (255, 255, 255, 0))
+            draw = ImageDraw.Draw(image)
+            
+            font_paths = [
+                "C:\\Windows\\Fonts\\seguiemj.ttf",  # Windows Emoji
+                "arial.ttf"
+            ]
+            font = None
+            for path in font_paths:
+                try:
+                    font = ImageFont.truetype(path, 96)
+                    break
+                except Exception:
+                    continue
+            
+            if font is None:
+                font = ImageFont.load_default()
+                
+            try:
+                draw.text((64, 64), emoji_char, font=font, fill=(0, 0, 0, 255), anchor="mm")
+            except Exception:
+                draw.text((16, 16), emoji_char, font=font, fill=(0, 0, 0, 255))
+                
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+        except Exception:
+            return None
+
+    async def _extract_images_from_message(self, message: discord.Message) -> list[tuple[str, bytes]]:
+        """메시지에서 사진 첨부파일, 커스텀 이모지, 유니코드 이모지를 추출해 (mime_type, bytes) 리스트로 반환합니다."""
+        images_data = []
+        max_images = 10
+
+        # 1. 사진 첨부파일 추출
+        for attachment in message.attachments:
+            if len(images_data) >= max_images:
+                break
+            mime = attachment.content_type
+            if mime and mime.startswith("image/"):
+                try:
+                    img_bytes = await attachment.read()
+                    images_data.append((mime, img_bytes))
+                except Exception:
+                    pass
+
+        content = message.content or ""
+
+        # 2. 커스텀 이모지 추출 (<:name:id> 또는 <a:name:id>)
+        custom_emoji_ids = re.findall(r'<a?:[a-zA-Z0-9_]+:([0-9]+)>', content)
+        for emoji_id in custom_emoji_ids:
+            if len(images_data) >= max_images:
+                break
+            url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png"
+            img_bytes = await self._download_image(url)
+            if img_bytes:
+                images_data.append(("image/png", img_bytes))
+
+        # 3. 유니코드 이모지 추출
+        unicode_emojis = [item['emoji'] for item in emoji.emoji_list(content)]
+        # 중복 방지를 위한 set (단일 메세지 내 동일 이모지가 여러 번 나오면 한 번만 이미지화해서 보냄)
+        seen_unicode = set()
+        for emoji_char in unicode_emojis:
+            if len(images_data) >= max_images:
+                break
+            if emoji_char in seen_unicode:
+                continue
+            seen_unicode.add(emoji_char)
+
+            # CDN 다운로드 시도
+            hex_name = self._get_twemoji_filename(emoji_char)
+            url = f"https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/{hex_name}.png"
+            img_bytes = await self._download_image(url)
+            
+            # 실패 시 로컬 렌더링
+            if not img_bytes:
+                img_bytes = self._render_emoji_locally(emoji_char)
+                
+            if img_bytes:
+                images_data.append(("image/png", img_bytes))
+
+        return images_data
 
     async def cog_load(self):
         await chatbot_db.init_db()
@@ -317,8 +432,15 @@ class Chatbot(commands.Cog):
             return
 
         user_content = message.content.strip()
-        if not user_content:
+        # 이미지 및 이모지 데이터 추출
+        images_data = await self._extract_images_from_message(message)
+
+        if not user_content and not images_data:
             return
+
+        # 텍스트가 비어있고 이미지만 있는 경우 플레이스홀더 사용
+        if not user_content and images_data:
+            user_content = "(첨부 이미지)"
 
         guild_id = message.guild.id
         user_id = message.author.id
@@ -348,7 +470,20 @@ class Chatbot(commands.Cog):
         memory_context = chatbot_memory.build_memory_context(memories)
 
         dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt + memory_context
-        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + self._trim_history(history)
+        trimmed_history = self._trim_history(history)
+
+        # 현재 메시지에 이미지/이모지가 있으면 API에 멀티모달 형태로 전달
+        if images_data and trimmed_history and trimmed_history[-1]["role"] == "user":
+            content_parts = [{"type": "text", "text": trimmed_history[-1]["content"]}]
+            for mime, img_bytes in images_data:
+                encoded = base64.b64encode(img_bytes).decode("utf-8")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"}
+                })
+            trimmed_history[-1]["content"] = content_parts
+
+        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + trimmed_history
 
         # typing 인디케이터 표시하며 API 호출
         async with message.channel.typing():
@@ -426,12 +561,25 @@ class Chatbot(commands.Cog):
             return
 
         guild_id = messages[0].guild.id
+        all_batch_images = []
 
-        # 모든 메시지를 DB/Pinecone에 저장
+        # 모든 메시지를 DB/Pinecone에 저장 및 이미지 수집
         for msg in messages:
             user_content = msg.content.strip()
-            if not user_content:
+            msg_images = await self._extract_images_from_message(msg)
+
+            if not user_content and not msg_images:
                 continue
+
+            if not user_content and msg_images:
+                user_content = "(첨부 이미지)"
+
+            # 배치 전체 이미지 목록에 누적 (최대 10개)
+            if len(all_batch_images) < 10:
+                all_batch_images.extend(msg_images)
+                if len(all_batch_images) > 10:
+                    all_batch_images = all_batch_images[:10]
+
             uid = msg.author.id
             display_name = msg.author.display_name.strip() or msg.author.name
             shared_content = f"[이름:{display_name}|ID:{uid}] {user_content}"
@@ -452,7 +600,20 @@ class Chatbot(commands.Cog):
         memory_context = chatbot_memory.build_memory_context(memories)
 
         dynamic_system_prompt = SYSTEM_PROMPT + intimacy_prompt + memory_context
-        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + self._trim_history(history)
+        trimmed_history = self._trim_history(history)
+
+        # 배치 전체에서 추출한 이미지/이모지가 있으면 API에 멀티모달 형태로 전달
+        if all_batch_images and trimmed_history and trimmed_history[-1]["role"] == "user":
+            content_parts = [{"type": "text", "text": trimmed_history[-1]["content"]}]
+            for mime, img_bytes in all_batch_images:
+                encoded = base64.b64encode(img_bytes).decode("utf-8")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"}
+                })
+            trimmed_history[-1]["content"] = content_parts
+
+        api_messages = [{"role": "system", "content": dynamic_system_prompt}] + trimmed_history
 
         async with last_msg.channel.typing():
             reply_text = None

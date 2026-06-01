@@ -16,7 +16,8 @@ dependencies = [
     "pillow (>=12.1.1,<13.0.0)",
     "python-dotenv (>=1.0.0)",
     "lavalink (>=5.10.0,<6.0.0)",
-    "pinecone (>=8.1.0,<9.0.0)"
+    "pinecone (>=8.1.0,<9.0.0)",
+    "emoji (>=2.15.0,<3.0.0)"
 ]
 
 
