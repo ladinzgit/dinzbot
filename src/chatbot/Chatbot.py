@@ -86,7 +86,12 @@ SYSTEM_PROMPT = (
 
     "[사용자 인식]\n"
     "- 유저 메시지는 '[이름:닉네임|ID:숫자] 내용' 형식으로 전달된다. 화자를 구분하여 응답하라.\n"
-    "- 특정 사용자를 지목해야 한다면 반드시 '<@사용자ID>' 형식을 사용하라.\n"
+    "- 특정 사용자를 지목해야 한다면 반드시 '<@사용자ID>' 형식을 사용하라.\n\n"
+
+    "[이미지 및 이모지 인식]\n"
+    "- 유저가 사진이나 이미지를 첨부하면 해당 이미지가 함께 전달된다. 이미지 내용을 분석하여 응답하라.\n"
+    "- 유저가 디스코드 커스텀 이모지나 유니코드 이모지를 보내면, 해당 이모지가 이미지로 변환되어 함께 전달된다.\n"
+    "- 이미지가 보이면 반드시 해당 이미지를 분석하고 내용에 대해 답변하라. '이미지가 보이지 않는다'고 하지 마라.\n"
 )
 
 
@@ -117,6 +122,8 @@ class Chatbot(commands.Cog):
     DISCORD_MESSAGE_LIMIT = 2000
     SAFE_MESSAGE_CHUNK = 1800
     PAREN_MENTION_PATTERN = re.compile(r"<@\((\d{15,22})\)>")
+    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    MAX_IMAGE_DIMENSION = 1024  # 이미지 최대 해상도 (가로/세로)
     STANDARD_MENTION_PATTERN = re.compile(r"<@!?(\d{15,22})>")
 
     def __init__(self, bot):
@@ -144,12 +151,15 @@ class Chatbot(commands.Cog):
     async def _download_image(self, url: str) -> bytes | None:
         """비동기적으로 외부 URL에서 이미지 바이트를 다운로드합니다."""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as response:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
                     if response.status == 200:
                         return await response.read()
-        except Exception:
-            pass
+                    else:
+                        await self.log(f"이미지 다운로드 실패 (HTTP {response.status}): {url}")
+        except Exception as e:
+            await self.log(f"이미지 다운로드 예외: {e} | URL: {url}")
         return None
 
     def _render_emoji_locally(self, emoji_char: str) -> bytes | None:
@@ -185,6 +195,29 @@ class Chatbot(commands.Cog):
         except Exception:
             return None
 
+    def _resize_image_if_needed(self, img_bytes: bytes, mime: str) -> tuple[str, bytes]:
+        """이미지가 MAX_IMAGE_DIMENSION을 초과하면 축소하고, 결과를 (mime, bytes)로 반환합니다."""
+        try:
+            img = Image.open(io.BytesIO(img_bytes))
+            w, h = img.size
+            max_dim = self.MAX_IMAGE_DIMENSION
+            if w > max_dim or h > max_dim:
+                ratio = min(max_dim / w, max_dim / h)
+                new_size = (int(w * ratio), int(h * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+            # RGBA인 경우 PNG로, 그 외엔 JPEG로 변환
+            output = io.BytesIO()
+            if img.mode == "RGBA":
+                img.save(output, format="PNG", optimize=True)
+                return "image/png", output.getvalue()
+            else:
+                img = img.convert("RGB")
+                img.save(output, format="JPEG", quality=85, optimize=True)
+                return "image/jpeg", output.getvalue()
+        except Exception:
+            # 변환 실패 시 원본 그대로 반환
+            return mime, img_bytes
+
     async def _extract_images_from_message(self, message: discord.Message) -> list[tuple[str, bytes]]:
         """메시지에서 사진 첨부파일, 커스텀 이모지, 유니코드 이모지를 추출해 (mime_type, bytes) 리스트로 반환합니다."""
         images_data = []
@@ -195,12 +228,28 @@ class Chatbot(commands.Cog):
             if len(images_data) >= max_images:
                 break
             mime = attachment.content_type
+            # content_type이 없는 경우 파일 확장자로 판별
+            is_image = False
             if mime and mime.startswith("image/"):
+                is_image = True
+            elif attachment.filename:
+                ext = os.path.splitext(attachment.filename)[1].lower()
+                if ext in self.IMAGE_EXTENSIONS:
+                    is_image = True
+                    mime = f"image/{ext.lstrip('.')}"
+                    if ext in (".jpg", ".jpeg"):
+                        mime = "image/jpeg"
+            if is_image:
                 try:
                     img_bytes = await attachment.read()
+                    mime, img_bytes = self._resize_image_if_needed(img_bytes, mime)
                     images_data.append((mime, img_bytes))
-                except Exception:
-                    pass
+                    await self.log(
+                        f"첨부 이미지 추출 성공: {attachment.filename} "
+                        f"(크기: {len(img_bytes)} bytes, MIME: {mime})"
+                    )
+                except Exception as e:
+                    await self.log(f"첨부 이미지 읽기 실패: {attachment.filename} | 오류: {e}")
 
         content = message.content or ""
 
@@ -209,7 +258,7 @@ class Chatbot(commands.Cog):
         for emoji_id in custom_emoji_ids:
             if len(images_data) >= max_images:
                 break
-            url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png"
+            url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png?size=128"
             img_bytes = await self._download_image(url)
             if img_bytes:
                 images_data.append(("image/png", img_bytes))
@@ -237,6 +286,12 @@ class Chatbot(commands.Cog):
             if img_bytes:
                 images_data.append(("image/png", img_bytes))
 
+        await self.log(
+            f"멀티모달 추출 완료: 첨부파일 {len(message.attachments)}개, "
+            f"커스텀이모지 {len(custom_emoji_ids)}개, "
+            f"유니코드이모지 {len(unicode_emojis)}개 → "
+            f"총 이미지 {len(images_data)}개 추출"
+        )
         return images_data
 
     async def cog_load(self):
@@ -481,7 +536,11 @@ class Chatbot(commands.Cog):
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime};base64,{encoded}"}
                 })
-            trimmed_history[-1]["content"] = content_parts
+            trimmed_history[-1] = {"role": "user", "content": content_parts}
+            await self.log(
+                f"멀티모달 API 전달: 텍스트 + 이미지 {len(images_data)}개 "
+                f"(총 base64 크기: {sum(len(base64.b64encode(img)) for _, img in images_data)} bytes)"
+            )
 
         api_messages = [{"role": "system", "content": dynamic_system_prompt}] + trimmed_history
 
@@ -497,6 +556,18 @@ class Chatbot(commands.Cog):
 
             # 대화 히스토리 때문에 지연되는 경우를 대비한 최종 경량 시도
             if not reply_text:
+                await self.log(f"첫 API 호출 실패, 경량 재시도 시작: {last_error}")
+                # 경량 재시도에도 이미지를 포함
+                if images_data:
+                    fallback_content = [{"type": "text", "text": user_content[:1200]}]
+                    for mime, img_bytes in images_data:
+                        encoded = base64.b64encode(img_bytes).decode("utf-8")
+                        fallback_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{encoded}"}
+                        })
+                else:
+                    fallback_content = user_content[:1200]
                 minimal_messages = [
                     {
                         "role": "system",
@@ -505,7 +576,7 @@ class Chatbot(commands.Cog):
                             "답변은 핵심 위주로 3~6문장 이내로 작성하세요."
                         ),
                     },
-                    {"role": "user", "content": user_content[:1200]},
+                    {"role": "user", "content": fallback_content},
                 ]
 
                 try:
@@ -611,7 +682,10 @@ class Chatbot(commands.Cog):
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime};base64,{encoded}"}
                 })
-            trimmed_history[-1]["content"] = content_parts
+            trimmed_history[-1] = {"role": "user", "content": content_parts}
+            await self.log(
+                f"배치 멀티모달 API 전달: 텍스트 + 이미지 {len(all_batch_images)}개"
+            )
 
         api_messages = [{"role": "system", "content": dynamic_system_prompt}] + trimmed_history
 
@@ -625,17 +699,29 @@ class Chatbot(commands.Cog):
                 last_error = e
 
             if not reply_text:
+                await self.log(f"배치 첫 API 호출 실패, 경량 재시도 시작: {last_error}")
                 combined_content = "\n".join(
                     f"[{m.author.display_name}] {m.content.strip()}"
                     for m in messages
                     if m.content.strip()
                 )
+                # 경량 재시도에도 이미지를 포함
+                if all_batch_images:
+                    fallback_content = [{"type": "text", "text": combined_content[:1200]}]
+                    for mime, img_bytes in all_batch_images:
+                        encoded = base64.b64encode(img_bytes).decode("utf-8")
+                        fallback_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{encoded}"}
+                        })
+                else:
+                    fallback_content = combined_content[:1200]
                 minimal_messages = [
                     {
                         "role": "system",
                         "content": "질문에 대해 반드시 답변하세요. 답변은 핵심 위주로 3~6문장 이내로 작성하세요.",
                     },
-                    {"role": "user", "content": combined_content[:1200]},
+                    {"role": "user", "content": fallback_content},
                 ]
                 try:
                     reply_text = await self._create_model_text(messages=minimal_messages)
